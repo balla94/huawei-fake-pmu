@@ -236,6 +236,271 @@ void wifiConnect()
   Serial.println(WiFi.localIP());
 }
 
+void handlePoll() {
+  bus.flush();
+  printTelnetf("Starting poll sequence...\n");
+
+
+  // Step 1: Send 0xC0 with MARK parity
+  bus.write(0xC0, EspSoftwareSerial::PARITY_MARK);
+
+  // Step 2: Wait up to 5ms for 0x00 with SPACE parity
+  unsigned long start = micros();
+  while (!bus.available() && micros() - start < 5000) delayMicroseconds(10);
+
+  if (!bus.available()) {
+    printTelnetf("Timeout waiting for 0x00 response\n");
+    return;
+  }
+
+  int response = bus.read();
+  int parity = bus.readParity();
+  if (response != 0x00 || parity) {
+    printTelnetf("Invalid response: 0x%02X, parity: %s\n", response, parity ? "MARK" : "SPACE");
+    return;
+  }
+
+  // Step 3: Wait precisely 1.4ms
+  delayMicroseconds(1400);
+
+  // Step 4: Send byte stream with SPACE parity
+  uint8_t request[] = {0x00, 0x04, 0xC8, 0x24, 0xFF, 0xFF, 0xEE};
+  for (size_t i = 0; i < sizeof(request); ++i) {
+    bus.write(request[i], EspSoftwareSerial::PARITY_SPACE);
+  }
+  //printTelnetf("Sent request frame with SPACE parity\n");
+
+  // Step 5: Wait up to 5ms for 0x7F response
+  start = micros();
+  while (!bus.available() && micros() - start < 8000) delayMicroseconds(10);
+
+  if (!bus.available()) {
+    printTelnetf("Timeout waiting for 0x7F ack\n");
+    return;
+  }
+
+  response = bus.read();
+  parity = bus.readParity();
+  if (response != 0x7F || parity) {
+    printTelnetf("Invalid ack: 0x%02X, parity: %s\n", response, parity ? "MARK" : "SPACE");
+    return;
+  }
+
+  // Step 6: Wait 1.8ms
+  delayMicroseconds(1800);
+
+  // Step 7: Send 0x20 with MARK parity
+  bus.write(0x20, EspSoftwareSerial::PARITY_MARK);
+
+  // Step 8: Wait up to 3ms for the start of 13-byte reply
+  start = micros();
+  while (!bus.available() && micros() - start < 8000) delayMicroseconds(10);
+
+  if (!bus.available()) {
+    printTelnetf("Timeout waiting for 13-byte response\n");
+    return;
+  }
+
+// Step 9: Read up to 64 bytes, timeout if no new byte in 1ms
+uint8_t buffer[64];
+size_t count = 0;
+unsigned long lastByteTime = micros();
+
+while (count < sizeof(buffer)) {
+  if (bus.available()) {
+    buffer[count++] = bus.read();
+    bus.readParity();  // always consume parity after read
+    lastByteTime = micros();  // reset timeout
+  } else if (micros() - lastByteTime >= 2000) {
+    break;  // idle for 1ms: end of message
+  }
+}
+
+
+  
+
+  // Step 10: Wait 1.5ms before sending 0x7F
+  delayMicroseconds(120);
+  bus.write(0x7F, EspSoftwareSerial::PARITY_SPACE);
+
+  if (count == 0) {
+  printTelnetf("No data received after 0x20\n");
+  return;
+}
+
+  if (count < 13) {
+    printTelnetf("Incomplete response: got %d bytes, expected 13\n", count);
+    return;
+  }
+
+  if (count > 13) {
+    printTelnetf("Invalid response: got %d bytes, expected 13\n", count);
+    return;
+  }
+
+  printTelnetf("Received 13-byte data frame: ");
+  for (size_t i = 0; i < 13; ++i) {
+    printTelnetf("0x%02X ", buffer[i]);
+  }
+  printTelnetf("\n");
+
+ uint16_t voltage = ((uint16_t)buffer[8] << 8) | buffer[9];
+  uint16_t current = ((uint16_t)buffer[10] << 8) | buffer[11];
+  printTelnetf("Voltage: %.2f V\n", voltage / 100.0);
+  printTelnetf("Current: %.2f A\n", current / 100.0);
+
+  printTelnetf("Poll done\n");
+}
+
+void sendFirstCommand() {
+  bus.flush();
+  printTelnetf("Sending first sequence...\n");
+
+
+  // Step 1: Send 0xC0 with MARK parity
+  bus.write(0xC0, EspSoftwareSerial::PARITY_MARK);
+
+  // Step 2: Wait up to 5ms for 0x00 with SPACE parity
+  unsigned long start = micros();
+  while (!bus.available() && micros() - start < 5000) delayMicroseconds(10);
+
+  if (!bus.available()) {
+    printTelnetf("Timeout waiting for 0x00 response\n");
+    return;
+  }
+
+  int response = bus.read();
+  int parity = bus.readParity();
+  if (response != 0x00 || parity) {
+    printTelnetf("Invalid response: 0x%02X, parity: %s\n", response, parity ? "MARK" : "SPACE");
+    return;
+  }
+
+  // Step 3: Wait precisely 1.4ms
+  delayMicroseconds(1400);
+
+  // Step 4: Send byte stream with SPACE parity
+  uint8_t request[] = {0x00, 0x04, 0xC8, 0x01, 0xFF, 0xFF, 0xCB};
+  for (size_t i = 0; i < sizeof(request); ++i) {
+    bus.write(request[i], EspSoftwareSerial::PARITY_SPACE);
+  }
+  //printTelnetf("Sent request frame with SPACE parity\n");
+
+  // Step 5: Wait up to 5ms for 0x7F response
+  start = micros();
+  while (!bus.available() && micros() - start < 8000) delayMicroseconds(10);
+
+  if (!bus.available()) {
+    printTelnetf("Timeout waiting for 0x7F ack\n");
+    return;
+  }
+
+  response = bus.read();
+  parity = bus.readParity();
+  if (response != 0x7F || parity) {
+    printTelnetf("Invalid ack: 0x%02X, parity: %s\n", response, parity ? "MARK" : "SPACE");
+    return;
+  }
+
+  // Step 6: Wait 1.8ms
+  delayMicroseconds(1800);
+
+  // Step 7: Send 0x20 with MARK parity
+  bus.write(0x20, EspSoftwareSerial::PARITY_MARK);
+
+  // Step 8: Wait up to 3ms for the start of 13-byte reply
+  start = micros();
+  while (!bus.available() && micros() - start < 8000) delayMicroseconds(10);
+
+  if (!bus.available()) {
+    printTelnetf("Timeout waiting for 13-byte response\n");
+    return;
+  }
+
+// Step 9: Read up to 64 bytes, timeout if no new byte in 1ms
+uint8_t buffer[64];
+size_t count = 0;
+unsigned long lastByteTime = micros();
+
+while (count < sizeof(buffer)) {
+  if (bus.available()) {
+    buffer[count++] = bus.read();
+    bus.readParity();  // always consume parity after read
+    lastByteTime = micros();  // reset timeout
+  } else if (micros() - lastByteTime >= 2000) {
+    break;  // idle for 1ms: end of message
+  }
+}
+
+
+  
+
+  // Step 10: Wait 1.5ms before sending 0x7F
+  delayMicroseconds(120);
+  bus.write(0x7F, EspSoftwareSerial::PARITY_SPACE);
+
+  if (count == 0) {
+  printTelnetf("No data received after 0x20\n");
+  return;
+}
+
+
+  if (count > 1) {
+    printTelnetf("Invalid response: got %d bytes, expected 1\n", count);
+    return;
+  }
+
+  printTelnetf("Received response: ");
+  for (size_t i = 0; i < 13; ++i) {
+    printTelnetf("0x%02X ", buffer[i]);
+  }
+  printTelnetf("\n");
+}
+
+void sendProbe(uint8_t command) {
+  printTelnetf("Sending command: 0x%02X with MARK parity...\n", command);
+  bus.flush();
+  // Send the command byte with MARK parity
+  bus.write(command, EspSoftwareSerial::PARITY_MARK);
+
+  // Wait up to 100ms for the first response byte
+  unsigned long start = millis();
+  while (!bus.available() && (millis() - start < 100)) {
+    delay(1);
+  }
+
+  if (!bus.available()) {
+    printTelnetf("No response within 100ms (timeout)\n");
+    return;
+  }
+
+  // Read up to 96 bytes with a 2ms idle timeout between bytes
+  uint8_t buffer[96];
+  size_t count = 0;
+  unsigned long lastByteTime = millis();
+
+  while (count < sizeof(buffer)) {
+    if (bus.available()) {
+      buffer[count++] = bus.read();
+      bus.readParity();  // Call to clear/align internal parity state
+      lastByteTime = millis();
+    } else {
+      if (millis() - lastByteTime >= 4) break; // Done if no byte for 2ms
+    }
+  }
+
+  delay(1);
+  bus.write(0x7F, EspSoftwareSerial::PARITY_SPACE);
+
+  // Print response in 0x00 format
+  printTelnetf("Received %d byte(s): ", count);
+  for (size_t i = 0; i < count; ++i) {
+    printTelnetf("0x%02X ", buffer[i]);
+  }
+  printTelnetf("\n");
+}
+
+
 void handleTelnetCommand(char *buf) {
    if (strcmp(buf, "reboot") == 0) {
     printTelnetf("Rebooting...\n");
@@ -246,7 +511,15 @@ void handleTelnetCommand(char *buf) {
     printTelnetf("====== WIFI INFO ======= \n");
     printTelnetf("Connected to: %s\n",WiFi.SSID().c_str());
     printTelnetf("Signal: %d\n",WiFi.RSSI());
-  }else {
+  }else if (strcmp(buf, "test") == 0) {
+  sendProbe(0x20); // 0x1C0 sent LSB-first as 8-bit + parity = 0xC1 with MARK
+}else if (strcmp(buf, "poll") == 0) {
+  sendProbe(0x20);
+  delay(1);
+  sendFirstCommand();
+  delay(1);
+  handlePoll();
+}else {
     printTelnetf("Unknown command: %s\n", buf);
   }
 }
@@ -274,7 +547,7 @@ void telnetloop()
   // Handle new client connection
   if (telnetserver.hasClient())
   {
-    WiFiClient newClient = telnetserver.available();
+    WiFiClient newClient = telnetserver.accept();
     if (newClient)
     {
       if (telnetclient && telnetclient.connected())
@@ -284,6 +557,8 @@ void telnetloop()
       telnetclient = newClient;
       telnetclient.setNoDelay(true);
       printTelnetf("Telnet connected\n");
+      printTelnetf("Fake Huawei PMU\n");
+      printTelnetf("Build %s %s\n",__DATE__,__TIME__);
       promptIndex = 0;  // Reset buffer
     }
   }
