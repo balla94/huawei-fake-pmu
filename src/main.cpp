@@ -6,19 +6,24 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
+#include "magic.h"
+
+EspSoftwareSerial::UART bus;
+
+int8_t pollSlave(uint8_t slaveID);
 
 #define PROMPT_BUFFER_SIZE 256
-#define TELNET_QUEUE_SIZE 64          // Increased queue size
-#define TELNET_MSG_SIZE 512           // Larger messages for batching
-#define TELNET_BATCH_SIZE 1400        // Near MTU size for batching
-#define TELNET_BATCH_TIMEOUT_MS 5     // Batch timeout
+#define TELNET_QUEUE_SIZE 64      // Increased queue size
+#define TELNET_MSG_SIZE 512       // Larger messages for batching
+#define TELNET_BATCH_SIZE 1400    // Near MTU size for batching
+#define TELNET_BATCH_TIMEOUT_MS 5 // Batch timeout
 
 #define UART_COMMAND_QUEUE_SIZE 10
 #define UART_RESPONSE_QUEUE_SIZE 10
 
 // DEFINE HERE THE KNOWN NETWORKS
 const char *KNOWN_SSID[] = {"P4IT", "szarvas", "clueQuest IoT", "Lufi"};
-const char *KNOWN_PASSWORD[] = {"pappka22", "pappka22", "CQIOT8147QQQ","almakorte12"};
+const char *KNOWN_PASSWORD[] = {"pappka22", "pappka22", "CQIOT8147QQQ", "almakorte12"};
 
 const int KNOWN_SSID_COUNT = sizeof(KNOWN_SSID) / sizeof(KNOWN_SSID[0]);
 
@@ -35,7 +40,8 @@ QueueHandle_t uartResponseQueue;
 TaskHandle_t uartTaskHandle;
 
 // UART command types
-enum UartCommand {
+enum UartCommand
+{
   CMD_TEST,
   CMD_POLL_SEQUENCE,
   CMD_FIRST_COMMAND,
@@ -43,13 +49,15 @@ enum UartCommand {
 };
 
 // UART command structure
-struct UartCommandMsg {
+struct UartCommandMsg
+{
   UartCommand command;
   uint8_t parameter;
 };
 
 // UART response structure
-struct UartResponseMsg {
+struct UartResponseMsg
+{
   char message[256];
   bool success;
   uint8_t data[64];
@@ -57,10 +65,11 @@ struct UartResponseMsg {
 };
 
 // Structure for telnet messages
-struct TelnetMessage {
+struct TelnetMessage
+{
   char message[TELNET_MSG_SIZE];
   size_t length;
-  bool urgent;  // For immediate sending without batching
+  bool urgent; // For immediate sending without batching
 };
 
 // Batch buffer for combining multiple messages
@@ -71,19 +80,22 @@ static unsigned long lastBatchTime = 0;
 // Non-blocking telnet print function
 void printTelnet(const char *message, bool urgent = false)
 {
-  if (!telnetQueue) return;
-  
+  if (!telnetQueue)
+    return;
+
   TelnetMessage msg;
   size_t len = strlen(message);
-  if (len >= TELNET_MSG_SIZE) len = TELNET_MSG_SIZE - 1;
-  
+  if (len >= TELNET_MSG_SIZE)
+    len = TELNET_MSG_SIZE - 1;
+
   memcpy(msg.message, message, len);
   msg.message[len] = '\0';
   msg.length = len;
   msg.urgent = urgent;
-  
+
   // Try to send to queue without blocking
-  if (xQueueSend(telnetQueue, &msg, 0) != pdTRUE) {
+  if (xQueueSend(telnetQueue, &msg, 0) != pdTRUE)
+  {
     // Queue is full, message dropped
   }
 }
@@ -91,22 +103,25 @@ void printTelnet(const char *message, bool urgent = false)
 // Non-blocking telnet printf function
 void printTelnetf(const char *fmt, ...)
 {
-  if (!telnetQueue) return;
-  
+  if (!telnetQueue)
+    return;
+
   TelnetMessage msg;
   va_list args;
   va_start(args, fmt);
   msg.length = vsnprintf(msg.message, TELNET_MSG_SIZE, fmt, args);
   va_end(args);
   msg.urgent = false;
-  
-  if (msg.length >= TELNET_MSG_SIZE) {
+
+  if (msg.length >= TELNET_MSG_SIZE)
+  {
     msg.length = TELNET_MSG_SIZE - 1;
     msg.message[msg.length] = '\0';
   }
-  
+
   // Try to send to queue without blocking
-  if (xQueueSend(telnetQueue, &msg, 0) != pdTRUE) {
+  if (xQueueSend(telnetQueue, &msg, 0) != pdTRUE)
+  {
     // Queue is full, message dropped
   }
 }
@@ -114,56 +129,68 @@ void printTelnetf(const char *fmt, ...)
 // Urgent printf for immediate sending
 void printTelnetfUrgent(const char *fmt, ...)
 {
-  if (!telnetQueue) return;
-  
+  if (!telnetQueue)
+    return;
+
   TelnetMessage msg;
   va_list args;
   va_start(args, fmt);
   msg.length = vsnprintf(msg.message, TELNET_MSG_SIZE, fmt, args);
   va_end(args);
   msg.urgent = true;
-  
-  if (msg.length >= TELNET_MSG_SIZE) {
+
+  if (msg.length >= TELNET_MSG_SIZE)
+  {
     msg.length = TELNET_MSG_SIZE - 1;
     msg.message[msg.length] = '\0';
   }
-  
+
   // Try to send to queue without blocking
-  if (xQueueSend(telnetQueue, &msg, 0) != pdTRUE) {
+  if (xQueueSend(telnetQueue, &msg, 0) != pdTRUE)
+  {
     // Queue is full, message dropped
   }
 }
 
 // Optimized function to send data with proper line ending conversion
-void sendToTelnetClient(const char *data, size_t length) {
-  if (!telnetclient || !telnetclient.connected()) return;
-  
+void sendToTelnetClient(const char *data, size_t length)
+{
+  if (!telnetclient || !telnetclient.connected())
+    return;
+
   // Send data in chunks with line ending conversion
   const char *ptr = data;
   const char *end = data + length;
-  
-  while (ptr < end) {
-    const char *lineEnd = (const char*)memchr(ptr, '\n', end - ptr);
-    
-    if (lineEnd) {
+
+  while (ptr < end)
+  {
+    const char *lineEnd = (const char *)memchr(ptr, '\n', end - ptr);
+
+    if (lineEnd)
+    {
       // Send data up to \n
-      if (lineEnd > ptr) {
-        telnetclient.write((const uint8_t*)ptr, lineEnd - ptr);
+      if (lineEnd > ptr)
+      {
+        telnetclient.write((const uint8_t *)ptr, lineEnd - ptr);
       }
       // Send \r\n for telnet
       telnetclient.write("\r\n", 2);
       ptr = lineEnd + 1;
-    } else {
+    }
+    else
+    {
       // Send remaining data
-      telnetclient.write((const uint8_t*)ptr, end - ptr);
+      telnetclient.write((const uint8_t *)ptr, end - ptr);
       break;
     }
   }
 }
 
 // Flush batch buffer
-void flushBatch() {
-  if (batchLength > 0 && telnetclient && telnetclient.connected()) {
+void flushBatch()
+{
+  if (batchLength > 0 && telnetclient && telnetclient.connected())
+  {
     sendToTelnetClient(batchBuffer, batchLength);
     batchLength = 0;
   }
@@ -171,79 +198,476 @@ void flushBatch() {
 }
 
 // Add message to batch or send immediately
-void processTelnetMessage(const TelnetMessage& msg) {
-  if (msg.urgent || !telnetclient || !telnetclient.connected()) {
+void processTelnetMessage(const TelnetMessage &msg)
+{
+  if (msg.urgent || !telnetclient || !telnetclient.connected())
+  {
     // Send immediately for urgent messages or if not connected
     flushBatch(); // Flush any pending batch first
-    if (telnetclient && telnetclient.connected()) {
+    if (telnetclient && telnetclient.connected())
+    {
       sendToTelnetClient(msg.message, msg.length);
     }
     return;
   }
-  
+
   // Check if message fits in batch
-  if (batchLength + msg.length > TELNET_BATCH_SIZE - 10) { // Leave some margin
+  if (batchLength + msg.length > TELNET_BATCH_SIZE - 10)
+  { // Leave some margin
     flushBatch();
   }
-  
+
   // Add to batch
   memcpy(batchBuffer + batchLength, msg.message, msg.length);
   batchLength += msg.length;
-  
+
   // Update batch time
-  if (batchLength == msg.length) { // First message in batch
+  if (batchLength == msg.length)
+  { // First message in batch
     lastBatchTime = millis();
   }
 }
 
 // High-performance telnet output task
-void telnetOutputTask(void *parameter) {
+void telnetOutputTask(void *parameter)
+{
   TelnetMessage msg;
   TickType_t timeout = pdMS_TO_TICKS(1); // 1ms timeout for responsiveness
-  
-  while (true) {
+
+  while (true)
+  {
     // Process messages from queue
     bool gotMessage = false;
-    while (xQueueReceive(telnetQueue, &msg, 0) == pdTRUE) {
+    while (xQueueReceive(telnetQueue, &msg, 0) == pdTRUE)
+    {
       processTelnetMessage(msg);
       gotMessage = true;
     }
-    
+
     // Check if batch should be flushed due to timeout
-    if (batchLength > 0 && (millis() - lastBatchTime >= TELNET_BATCH_TIMEOUT_MS)) {
+    if (batchLength > 0 && (millis() - lastBatchTime >= TELNET_BATCH_TIMEOUT_MS))
+    {
       flushBatch();
     }
-    
+
     // Small delay if no messages processed
-    if (!gotMessage) {
+    if (!gotMessage)
+    {
       vTaskDelay(timeout);
     }
   }
 }
 
+void parseOutputValues(uint8_t slaveID, uint8_t *buffer, size_t count)
+{
+  if (count != 13)
+  {
+    printTelnetf("Invalid packet size");
+  }
+  uint16_t voltage = ((uint16_t)buffer[8] << 8) | buffer[9];
+  uint16_t current = ((uint16_t)buffer[10] << 8) | buffer[11];
+
+  float vout = voltage / 100.0;
+  float cout = current / 100.0;
+
+  printTelnetf("Slave %d output voltage: %2.2fV current: %2.2fA\n", slaveID, vout, cout);
+}
+
+uint32_t getMagic(uint8_t *buffer, size_t count)
+{
+  if (count < 7) // Need 7 bytes now (0,1,2,3,4,5,6)
+    return 0;
+
+  return ((uint32_t)buffer[3] << 24) | // Changed from buffer[2]
+         ((uint32_t)buffer[4] << 16) | // Changed from buffer[3]
+         ((uint32_t)buffer[5] << 8) |  // Changed from buffer[4]
+         ((uint32_t)buffer[6]);        // Changed from buffer[5]
+}
+
+uint8_t calculateCRC(const uint8_t *buffer, int length)
+{
+  uint16_t sum = 0;
+  for (int i = 0; i < length; i++)
+  {
+    sum += buffer[i];
+  }
+  return sum & 0xFF; // Take lower 8 bits (modulo 256)
+}
+
+int8_t sendSimpleCommand(uint8_t slaveID, uint32_t command)
+{
+  printTelnetf("Sending simple command to slave %d\n", slaveID);
+  bus.flush();
+  while (bus.available())
+    bus.read();
+
+  bus.write(0xC0 + slaveID, EspSoftwareSerial::PARITY_MARK);
+
+  unsigned long start = millis();
+  while (!bus.available() && (millis() - start < 100))
+  {
+    delay(1);
+  }
+
+  if (!bus.available())
+  {
+    printTelnetf("Timeout.\n");
+    return -1;
+  }
+
+  uint8_t buffer[96];
+  size_t count = 0;
+  unsigned long lastByteTime = millis();
+
+  while (count < sizeof(buffer))
+  {
+    if (bus.available())
+    {
+      buffer[count++] = bus.read();
+      lastByteTime = millis();
+    }
+    else
+    {
+      if (millis() - lastByteTime >= 20)
+        break;
+    }
+  }
+
+  if (count != 1 || buffer[0] != slaveID)
+  {
+    printTelnetf("Unexpected response. Got %d bytes, expected 1. First byte: 0x%02X, expected: 0x%02X\n",
+                 count, count > 0 ? buffer[0] : 0, slaveID);
+    return -2;
+  }
+
+  // Send 4-byte command with SPACE parity
+  printTelnetf("Sending command: 0x%08X\n", command);
+
+  // Create frame: 0x00 0x04 cmd_byte3 cmd_byte2 cmd_byte1 cmd_byte0 crc
+  uint8_t frame[7];
+  frame[0] = 0x00; // Header/slave ID
+  frame[1] = 0x04; // Payload length (4 bytes)
+
+  // Split uint32_t into 4 bytes (big-endian)
+  frame[2] = (command >> 24) & 0xFF; // MSB
+  frame[3] = (command >> 16) & 0xFF;
+  frame[4] = (command >> 8) & 0xFF;
+  frame[5] = command & 0xFF; // LSB
+
+  // Calculate CRC on first 6 bytes
+  frame[6] = calculateCRC(frame, 6);
+
+  // Send all bytes with SPACE parity
+  for (int i = 0; i < 7; i++)
+  {
+    bus.write(frame[i], EspSoftwareSerial::PARITY_SPACE);
+  }
+
+  printTelnetf("Frame sent: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X (SPACE parity)\n",
+               frame[0], frame[1], frame[2], frame[3], frame[4], frame[5], frame[6]);
+  delay(1);
+
+  count = 0;
+  lastByteTime = millis();
+
+  while (count < sizeof(buffer))
+  {
+    if (bus.available())
+    {
+      buffer[count++] = bus.read();
+      lastByteTime = millis();
+    }
+    else
+    {
+      if (millis() - lastByteTime >= 16)
+        break;
+    }
+  }
+
+  if (count != 1 || buffer[0] != 0x7F)
+  {
+    printTelnetf("Unexpected response. Got %d bytes, expected 1. First byte: 0x%02X, expected: 0x7F ACK\n",
+                 count, count > 0 ? buffer[0] : 0);
+    return -2;
+  }
+  else
+    printTelnetf("Got ACK\n");
+
+  return 0; // Success
+}
+int8_t sendCommandWithPayload(uint8_t slaveID, uint32_t command, uint32_t payload)
+{
+  printTelnetf("Sending command with payload to slave %d\n", slaveID);
+  bus.flush();
+  while (bus.available())
+    bus.read();
+
+  bus.write(0xC0 + slaveID, EspSoftwareSerial::PARITY_MARK);
+
+  unsigned long start = millis();
+  while (!bus.available() && (millis() - start < 100))
+  {
+    delay(1);
+  }
+
+  if (!bus.available())
+  {
+    printTelnetf("Timeout.\n");
+    return -1;
+  }
+
+  uint8_t buffer[96];
+  size_t count = 0;
+  unsigned long lastByteTime = millis();
+
+  while (count < sizeof(buffer))
+  {
+    if (bus.available())
+    {
+      buffer[count++] = bus.read();
+      lastByteTime = millis();
+    }
+    else
+    {
+      if (millis() - lastByteTime >= 20)
+        break;
+    }
+  }
+
+  if (count != 1 || buffer[0] != slaveID)
+  {
+    printTelnetf("Unexpected response. Got %d bytes, expected 1. First byte: 0x%02X, expected: 0x%02X\n",
+                 count, count > 0 ? buffer[0] : 0, slaveID);
+    return -2;
+  }
+
+  // Send 4-byte command with SPACE parity
+  printTelnetf("Sending command: 0x%08X\n", command);
+
+  // Create frame: 0x00 0x04 cmd_byte3 cmd_byte2 cmd_byte1 cmd_byte0 crc
+  uint8_t frame[11];
+  frame[0] = 0x00; // Header/slave ID
+  frame[1] = 0x08; // Payload length (4 bytes)
+
+  // Split uint32_t into 4 bytes (big-endian)
+  frame[2] = (command >> 24) & 0xFF; // MSB
+  frame[3] = (command >> 16) & 0xFF;
+  frame[4] = (command >> 8) & 0xFF;
+  frame[5] = command & 0xFF; // LSB
+
+  // Split uint32_t into 4 bytes (big-endian)
+  frame[6] = (payload >> 24) & 0xFF; // MSB
+  frame[7] = (payload >> 16) & 0xFF;
+  frame[8] = (payload >> 8) & 0xFF;
+  frame[9] = payload & 0xFF; // LSB
+
+  // Calculate CRC on first 6 bytes
+  frame[10] = calculateCRC(frame, 10);
+
+  // Send all bytes with SPACE parity
+  for (int i = 0; i < 11; i++)
+  {
+    bus.write(frame[i], EspSoftwareSerial::PARITY_SPACE);
+  }
+
+  printTelnetf("Frame sent: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X \n",
+               frame[0], frame[1], frame[2], frame[3], frame[4], frame[5], frame[6], frame[7], frame[8], frame[9], frame[10]);
+  delay(1);
+
+  count = 0;
+  lastByteTime = millis();
+
+  while (count < sizeof(buffer))
+  {
+    if (bus.available())
+    {
+      buffer[count++] = bus.read();
+      lastByteTime = millis();
+    }
+    else
+    {
+      if (millis() - lastByteTime >= 16)
+        break;
+    }
+  }
+
+  if (count != 1 || buffer[0] != 0x7F)
+  {
+    printTelnetf("Unexpected response. Got %d bytes, expected 1. First byte: 0x%02X, expected: 0x7F ACK\n",
+                 count, count > 0 ? buffer[0] : 0);
+    return -2;
+  }
+  else
+    printTelnetf("Got ACK\n");
+
+  return 0; // Success
+}
+
+void setVoltage(uint8_t slaveID, float voltage, float current)
+{
+  // Convert to integers (multiply by 100)
+  uint16_t voltage_int = (uint16_t)(voltage * 100);
+  uint16_t current_int = (uint16_t)(current * 100);
+
+  // Combine into 32-bit payload: voltage in upper 16 bits, current in lower 16 bits
+  uint32_t payload = ((uint32_t)voltage_int << 16) | current_int;
+
+  printTelnetf("Setting voltage: %.2fV (0x%04X), current: %.2fA (0x%04X)\n",
+               voltage, voltage_int, current, current_int);
+  printTelnetf("Combined payload: 0x%08X\n", payload);
+
+  sendCommandWithPayload(slaveID, MAGIC_SET_OUTPUT, payload);
+  pollSlave(slaveID);
+}
+
+void processReceivedData(uint8_t slaveID, uint8_t *buffer, size_t count)
+{
+  if (calculateCRC(buffer, count - 1) != buffer[count - 1])
+  {
+    printTelnetf("CRC fail!\n");
+    return;
+  }
+
+  if (buffer[2] != (count - 4))
+  { // count - (header + length byte + CRC)
+    printTelnetf("Length invalid! Expected: %d, Got: %d\n", (count - 4), buffer[2]);
+    return;
+  }
+
+  if (count < 7)
+  {
+    printTelnetf("Frame too short for magic words! Got %d bytes, need at least 7\n", count);
+    return;
+  }
+
+  uint32_t magic = getMagic(buffer, count);
+
+  if (magic == 0)
+  {
+    printTelnetf("Magic extraction failed!\n");
+    return;
+  }
+
+  if (magic == MAGIC_INITIALIZE)
+  {
+    printTelnetf("PMU is uninitialized!\n");
+    sendSimpleCommand(slaveID, MAGIC_INITIALIZE);
+  }
+  if (magic == MAGIC_OUTPUT_VOLTAGE)
+  {
+    parseOutputValues(slaveID, buffer, count);
+  }
+  return;
+}
+
+int8_t pollSlave(uint8_t slaveID)
+{
+
+  printTelnetf("Polling slave %d\n", slaveID);
+
+  bus.flush();
+  while (bus.available())
+    bus.read();
+
+  bus.write(0x20 + slaveID, EspSoftwareSerial::PARITY_MARK);
+
+  unsigned long start = millis();
+  while (!bus.available() && (millis() - start < 100))
+  {
+    delay(1);
+  }
+
+  if (!bus.available())
+  {
+    printTelnetf("Timeout.\n");
+    return -1;
+  }
+
+  uint8_t buffer[96];
+  size_t count = 0;
+  unsigned long lastByteTime = millis();
+
+  while (count < sizeof(buffer))
+  {
+    if (bus.available())
+    {
+      buffer[count++] = bus.read();
+      lastByteTime = millis();
+    }
+    else
+    {
+      if (millis() - lastByteTime >= 4)
+        break;
+    }
+  }
+
+  bus.write(0x7F, EspSoftwareSerial::PARITY_SPACE);
+
+  // Copy data to response
+  if (count > 0)
+  {
+    printTelnetf("Received %d byte(s)\n", count);
+  }
+
+  if (count == 1 && buffer[0] == 0x73)
+  {
+    printTelnetf("Slave has nothing to say\n");
+    return 0;
+  }
+
+  char hexString[count * 5];
+  hexString[0] = '\0'; // Initialize as empty string
+
+  for (size_t i = 0; i < count; i++)
+  {
+    char hexByte[6]; // "0x73 " + null terminator
+    if (i == 0)
+    {
+      sprintf(hexByte, "0x%02X", buffer[i]);
+    }
+    else
+    {
+      sprintf(hexByte, " 0x%02X", buffer[i]);
+    }
+    strcat(hexString, hexByte);
+  }
+
+  printTelnetf("Data: %s\n", hexString);
+  processReceivedData(slaveID, buffer, count);
+
+  return count;
+}
+
 // UART Task running on core 1 - handles ALL software serial operations
-void uartTask(void *parameter) {
+void uartTask(void *parameter)
+{
   // Initialize software serial on this core
-  EspSoftwareSerial::UART bus;
+
   bus.begin(9600, SWSERIAL_8S1, 36, 4, false, 256, 256);
   bus.enableIntTx(false);
-  
+
   UartCommandMsg cmd;
   UartResponseMsg response;
-  
-  while (true) {
+
+  unsigned long lastOutputVoltagePolled = 0;
+
+  unsigned long lastVoltageSetAsked = 0;
+  bool lastV = false;
+
+  while (true)
+  {
     // Wait for UART commands
-    if (xQueueReceive(uartCommandQueue, &cmd, portMAX_DELAY) == pdTRUE) {
+    /*if (xQueueReceive(uartCommandQueue, &cmd, portMAX_DELAY) == pdTRUE) {
       response.success = false;
       response.dataLength = 0;
       memset(response.data, 0, sizeof(response.data));
-      
-      switch (cmd.command) {
+
+    switch (cmd.command) {
         case CMD_TEST:
           {
             snprintf(response.message, sizeof(response.message), "Sending command: 0x%02X with MARK parity...\n", cmd.parameter);
             xQueueSend(uartResponseQueue, &response, 0);
-            
+
             bus.flush();
             bus.write(cmd.parameter, EspSoftwareSerial::PARITY_MARK);
 
@@ -281,7 +705,7 @@ void uartTask(void *parameter) {
               response.dataLength = count;
               response.success = true;
             }
-            
+
             snprintf(response.message, sizeof(response.message), "Received %d byte(s): ", count);
             for (size_t i = 0; i < count && i < 32; ++i) {
               char hex[8];
@@ -292,14 +716,14 @@ void uartTask(void *parameter) {
             xQueueSend(uartResponseQueue, &response, 0);
           }
           break;
-          
+
         case CMD_FIRST_COMMAND:
           {
             snprintf(response.message, sizeof(response.message), "Sending first sequence...\n");
             xQueueSend(uartResponseQueue, &response, 0);
-            
+
             bus.flush();
-            
+
             // Step 1: Send 0xC0 with MARK parity
             bus.write(0xC0, EspSoftwareSerial::PARITY_MARK);
 
@@ -399,7 +823,7 @@ void uartTask(void *parameter) {
             memcpy(response.data, buffer, count);
             response.dataLength = count;
             response.success = true;
-            
+
             snprintf(response.message, sizeof(response.message), "Received response: ");
             for (size_t i = 0; i < count; ++i) {
               char hex[8];
@@ -410,12 +834,12 @@ void uartTask(void *parameter) {
             xQueueSend(uartResponseQueue, &response, 0);
           }
           break;
-          
+
         case CMD_POLL_DATA:
           {
             snprintf(response.message, sizeof(response.message), "Starting poll sequence...\n");
             xQueueSend(uartResponseQueue, &response, 0);
-            
+
             bus.flush();
 
             // Step 1: Send 0xC0 with MARK parity
@@ -543,22 +967,47 @@ void uartTask(void *parameter) {
           }
           break;
       }
+    }*/
+    for (int i = 0; i < 3; i++)
+    {
+      if (pollSlave(i) == 0)
+      {
+        if (millis() - lastOutputVoltagePolled > 3500)
+        {
+          lastOutputVoltagePolled == millis();
+          sendSimpleCommand(i, MAGIC_OUTPUT_VOLTAGE);
+          pollSlave(i);
+        }
+      }
+      delay(400);
     }
+    if(millis() - lastVoltageSetAsked > 10000)
+    {
+      lastVoltageSetAsked = millis();
+      lastV = !lastV;
+      if(lastV)setVoltage(0,44.0,33.0);
+      else setVoltage(0,46.0,33.0);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
 // Optimized WiFi and telnet setup
-void optimizeNetworking() {
+void optimizeNetworking()
+{
   // TCP performance optimizations
-  WiFi.setSleep(false);  // Disable WiFi power saving for better performance
+  WiFi.setSleep(false); // Disable WiFi power saving for better performance
 }
 
-void setupTelnetOptimizations() {
-  if (telnetclient && telnetclient.connected()) {
+void setupTelnetOptimizations()
+{
+  if (telnetclient && telnetclient.connected())
+  {
     // Disable Nagle's algorithm for lower latency - this works in Arduino ESP32
     telnetclient.setNoDelay(true);
-    
-    // Note: Advanced socket options like SO_KEEPALIVE, SO_SNDBUF etc. 
+
+    // Note: Advanced socket options like SO_KEEPALIVE, SO_SNDBUF etc.
     // are not exposed in Arduino ESP32 WiFiClient, but the message batching
     // and non-blocking queue system provide the main performance benefits
   }
@@ -747,53 +1196,62 @@ void wifiConnect()
   Serial.println(WiFi.localIP());
 }
 
-void handleTelnetCommand(char *buf) {
+void handleTelnetCommand(char *buf)
+{
   UartCommandMsg cmd;
-  
-  if (strcmp(buf, "reboot") == 0) {
+
+  if (strcmp(buf, "reboot") == 0)
+  {
     printTelnetfUrgent("Rebooting...\n");
     delay(300);
     ESP.restart();
-  } 
-  else if (strcmp(buf, "wifi") == 0) {
+  }
+  else if (strcmp(buf, "wifi") == 0)
+  {
     printTelnetfUrgent("====== WIFI INFO ======= \n");
     printTelnetfUrgent("Connected to: %s\n", WiFi.SSID().c_str());
     printTelnetfUrgent("Signal: %d\n", WiFi.RSSI());
   }
-  else if (strcmp(buf, "test") == 0) {
+  else if (strcmp(buf, "test") == 0)
+  {
     cmd.command = CMD_TEST;
     cmd.parameter = 0x20;
     xQueueSend(uartCommandQueue, &cmd, 0);
   }
-  else if (strcmp(buf, "poll") == 0) {
+  else if (strcmp(buf, "poll") == 0)
+  {
     // Send poll sequence
     cmd.command = CMD_TEST;
     cmd.parameter = 0x20;
     xQueueSend(uartCommandQueue, &cmd, 0);
-    
+
     // Wait a bit then send first command
     vTaskDelay(pdMS_TO_TICKS(100));
     cmd.command = CMD_FIRST_COMMAND;
     xQueueSend(uartCommandQueue, &cmd, 0);
-    
+
     // Wait a bit then send poll data command
     vTaskDelay(pdMS_TO_TICKS(100));
     cmd.command = CMD_POLL_DATA;
     xQueueSend(uartCommandQueue, &cmd, 0);
   }
-  else if (strcmp(buf, "help") == 0) {
+  else if (strcmp(buf, "help") == 0)
+  {
     printTelnetfUrgent("Commands: wifi, test, poll, reboot, help\n");
   }
-  else {
+  else
+  {
     printTelnetf("Unknown command: %s\n", buf);
   }
 }
 
 // Response processor - checks for UART responses and forwards to telnet
-void processUartResponses() {
+void processUartResponses()
+{
   UartResponseMsg response;
   // Check for responses without blocking
-  while (xQueueReceive(uartResponseQueue, &response, 0) == pdTRUE) {
+  while (xQueueReceive(uartResponseQueue, &response, 0) == pdTRUE)
+  {
     printTelnetf("%s", response.message);
   }
 }
@@ -802,39 +1260,40 @@ void setup()
 {
   delay(200);
   Serial.begin(115200);
-  
+
   // Create all queues
   telnetQueue = xQueueCreate(TELNET_QUEUE_SIZE, sizeof(TelnetMessage));
   uartCommandQueue = xQueueCreate(UART_COMMAND_QUEUE_SIZE, sizeof(UartCommandMsg));
   uartResponseQueue = xQueueCreate(UART_RESPONSE_QUEUE_SIZE, sizeof(UartResponseMsg));
-  
-  if (!telnetQueue || !uartCommandQueue || !uartResponseQueue) {
+
+  if (!telnetQueue || !uartCommandQueue || !uartResponseQueue)
+  {
     Serial.println("Failed to create queues!");
     return;
   }
-  
+
   // Create UART task on core 1 (isolated from WiFi/telnet)
   xTaskCreatePinnedToCore(
-    uartTask,            // Task function
-    "UartTask",          // Task name
-    8192,                // Stack size
-    NULL,                // Parameters
-    5,                   // Highest priority
-    &uartTaskHandle,     // Task handle
-    1                    // Core 1 - isolated from WiFi
+      uartTask,        // Task function
+      "UartTask",      // Task name
+      8192,            // Stack size
+      NULL,            // Parameters
+      5,               // Highest priority
+      &uartTaskHandle, // Task handle
+      1                // Core 1 - isolated from WiFi
   );
-  
+
   // Create telnet output task on core 0
   xTaskCreatePinnedToCore(
-    telnetOutputTask,    // Task function
-    "TelnetOutput",      // Task name
-    8192,                // Stack size
-    NULL,                // Parameters
-    3,                   // High priority
-    &telnetTaskHandle,   // Task handle
-    0                    // Core 0 - with WiFi
+      telnetOutputTask,  // Task function
+      "TelnetOutput",    // Task name
+      8192,              // Stack size
+      NULL,              // Parameters
+      3,                 // High priority
+      &telnetTaskHandle, // Task handle
+      0                  // Core 0 - with WiFi
   );
-  
+
   WiFi.onEvent(WiFiEvent);
   wifiConnect();
   telnetserver.begin();
@@ -862,10 +1321,10 @@ void telnetloop()
         telnetclient.stop();
       }
       telnetclient = newClient;
-      
+
       // Apply optimizations immediately
       setupTelnetOptimizations();
-      
+
       printTelnetfUrgent("Telnet connected (core isolated)\n");
       printTelnetfUrgent("Fake Huawei PMU\n");
       printTelnetfUrgent("Build %s %s\n", __DATE__, __TIME__);
@@ -878,24 +1337,32 @@ void telnetloop()
   if (telnetclient && telnetclient.connected())
   {
     // Check for input more frequently and filter out telnet control codes
-    while (telnetclient.available()) {
+    while (telnetclient.available())
+    {
       int c = telnetclient.read();
-      
+
       // Filter out telnet control sequences and non-printable characters
-      if (c == 255) {  // IAC (Interpret As Command) - skip telnet control sequences
+      if (c == 255)
+      { // IAC (Interpret As Command) - skip telnet control sequences
         // Skip the next 2 bytes of telnet control sequence
-        if (telnetclient.available()) telnetclient.read();
-        if (telnetclient.available()) telnetclient.read();
+        if (telnetclient.available())
+          telnetclient.read();
+        if (telnetclient.available())
+          telnetclient.read();
         continue;
       }
-      
-      if (c >= 32 && c <= 126) {  // Only accept printable ASCII characters
-        if (promptIndex < PROMPT_BUFFER_SIZE - 1) {
+
+      if (c >= 32 && c <= 126)
+      { // Only accept printable ASCII characters
+        if (promptIndex < PROMPT_BUFFER_SIZE - 1)
+        {
           promptBuffer[promptIndex++] = (char)c;
         }
       }
-      else if (c == '\r' || c == '\n') {
-        if (promptIndex > 0) {
+      else if (c == '\r' || c == '\n')
+      {
+        if (promptIndex > 0)
+        {
           promptBuffer[promptIndex] = '\0';
           handleTelnetCommand(promptBuffer);
           promptIndex = 0;
