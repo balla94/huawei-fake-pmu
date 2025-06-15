@@ -7,10 +7,18 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "magic.h"
+#include "LittleFS.h"
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
+#include <PubSubClient.h>
+
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+WiFiClient mqttWifiClient;
+PubSubClient mqttClient(mqttWifiClient);
 
 EspSoftwareSerial::UART bus;
-
-int8_t pollSlave(uint8_t slaveID);
 
 #define PROMPT_BUFFER_SIZE 256
 #define TELNET_QUEUE_SIZE 64      // Increased queue size
@@ -38,6 +46,30 @@ TaskHandle_t telnetTaskHandle;
 QueueHandle_t uartCommandQueue;
 QueueHandle_t uartResponseQueue;
 TaskHandle_t uartTaskHandle;
+
+// Configuration structures
+struct MqttConfig {
+  bool enabled;
+  String serverIP;
+  String baseTopic;
+  String username;
+  String password;
+  int port;
+};
+
+struct PmuConfig {
+  int expectedClients;
+  float outputVoltage;
+  float outputCurrent;
+};
+
+// Global config variables
+MqttConfig mqttConfig;
+PmuConfig pmuConfig;
+
+// MQTT status variables
+bool mqtt_connected = false;
+unsigned long last_mqtt_reconnect = 0;
 
 // UART command types
 enum UartCommand
@@ -76,6 +108,490 @@ struct TelnetMessage
 static char batchBuffer[TELNET_BATCH_SIZE];
 static size_t batchLength = 0;
 static unsigned long lastBatchTime = 0;
+
+// Forward declarations
+void printTelnetf(const char *fmt, ...);
+void printTelnetfUrgent(const char *fmt, ...);
+bool getEthernetStatus();
+void updateMQTTStatus(bool connected);
+void publishMQTTStatus();
+void saveMqttConfig();
+void savePmuConfig();
+void initMQTT();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+int8_t pollSlave(uint8_t slaveID);
+
+// Validate IP address format
+bool isValidIPAddress(const String& ip) {
+  int parts[4];
+  int partCount = 0;
+  int startIndex = 0;
+  
+  for (int i = 0; i <= ip.length(); i++) {
+    if (i == ip.length() || ip.charAt(i) == '.') {
+      if (partCount >= 4) return false;
+      
+      String part = ip.substring(startIndex, i);
+      if (part.length() == 0 || part.length() > 3) return false;
+      
+      int value = part.toInt();
+      if (value < 0 || value > 255) return false;
+      
+      // Check if conversion was valid (not just 0 from invalid string)
+      if (value == 0 && part != "0") return false;
+      
+      parts[partCount++] = value;
+      startIndex = i + 1;
+    }
+  }
+  
+  return partCount == 4;
+}
+
+// Save MQTT configuration
+void saveMqttConfig() {
+  JsonDocument doc;
+  doc["enabled"] = mqttConfig.enabled;
+  doc["serverIP"] = mqttConfig.serverIP;
+  doc["baseTopic"] = mqttConfig.baseTopic;
+  doc["username"] = mqttConfig.username;
+  doc["password"] = mqttConfig.password;
+  doc["port"] = mqttConfig.port;
+  
+  File file = LittleFS.open("/config/mqtt.cfg", "w");
+  if (file) {
+    serializeJson(doc, file);
+    file.close();
+    Serial.println("MQTT config saved");
+  } else {
+    Serial.println("Failed to save MQTT config");
+  }
+}
+
+// Save PMU configuration
+void savePmuConfig() {
+  JsonDocument doc;
+  doc["expectedClients"] = pmuConfig.expectedClients;
+  doc["outputVoltage"] = pmuConfig.outputVoltage;
+  doc["outputCurrent"] = pmuConfig.outputCurrent;
+  
+  File file = LittleFS.open("/config/pmu.cfg", "w");
+  if (file) {
+    serializeJson(doc, file);
+    file.close();
+    Serial.println("PMU config saved");
+  } else {
+    Serial.println("Failed to save PMU config");
+  }
+}
+
+// Load MQTT configuration
+void loadMqttConfig() {
+  // Set defaults first
+  mqttConfig.enabled = false;
+  mqttConfig.serverIP = "0.0.0.0";
+  mqttConfig.baseTopic = "pmu";
+  mqttConfig.username = "admin";
+  mqttConfig.password = "";
+  mqttConfig.port = 1883;
+  
+  if (!LittleFS.exists("/config")) {
+    LittleFS.mkdir("/config");
+  }
+  
+  if (LittleFS.exists("/config/mqtt.cfg")) {
+    File file = LittleFS.open("/config/mqtt.cfg", "r");
+    if (file) {
+      String content = file.readString();
+      file.close();
+      
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, content);
+      
+      if (!error) {
+        mqttConfig.enabled = doc["enabled"] | false;
+        String serverIP = doc["serverIP"] | "0.0.0.0";
+        
+        // Validate IP address
+        if (isValidIPAddress(serverIP)) {
+          mqttConfig.serverIP = serverIP;
+        } else {
+          mqttConfig.serverIP = "0.0.0.0";
+          mqttConfig.enabled = false; // Disable if invalid IP
+          Serial.println("Invalid MQTT server IP, MQTT disabled");
+        }
+        
+        mqttConfig.baseTopic = doc["baseTopic"] | "pmu";
+        if (mqttConfig.baseTopic.isEmpty()) {
+          mqttConfig.baseTopic = "pmu";
+        }
+        
+        mqttConfig.username = doc["username"] | "admin";
+        mqttConfig.password = doc["password"] | "";
+        mqttConfig.port = doc["port"] | 1883;
+        
+        Serial.printf("MQTT config loaded: %s, IP: %s, Topic: %s\n", 
+                    mqttConfig.enabled ? "enabled" : "disabled",
+                    mqttConfig.serverIP.c_str(),
+                    mqttConfig.baseTopic.c_str());
+      } else {
+        Serial.println("Failed to parse MQTT config, using defaults");
+        saveMqttConfig(); // Save defaults
+      }
+    }
+  } else {
+    Serial.println("MQTT config not found, creating default");
+    saveMqttConfig();
+  }
+}
+
+// Load PMU configuration
+void loadPmuConfig() {
+  // Set defaults first
+  pmuConfig.expectedClients = 10;
+  pmuConfig.outputVoltage = 48.0;
+  pmuConfig.outputCurrent = 33.0;
+  
+  if (!LittleFS.exists("/config")) {
+    LittleFS.mkdir("/config");
+  }
+  
+  if (LittleFS.exists("/config/pmu.cfg")) {
+    File file = LittleFS.open("/config/pmu.cfg", "r");
+    if (file) {
+      String content = file.readString();
+      file.close();
+      
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, content);
+      
+      if (!error) {
+        int clients = doc["expectedClients"] | 10;
+        pmuConfig.expectedClients = constrain(clients, 1, 10);
+        
+        pmuConfig.outputVoltage = doc["outputVoltage"] | 48.0;
+        pmuConfig.outputCurrent = doc["outputCurrent"] | 33.0;
+        
+        Serial.printf("PMU config loaded: %d clients, %.1fV, %.1fA\n", 
+                    pmuConfig.expectedClients,
+                    pmuConfig.outputVoltage,
+                    pmuConfig.outputCurrent);
+      } else {
+        Serial.println("Failed to parse PMU config, using defaults");
+        savePmuConfig(); // Save defaults
+      }
+    }
+  } else {
+    Serial.println("PMU config not found, creating default");
+    savePmuConfig();
+  }
+}
+
+// Dummy functions for compatibility
+bool getEthernetStatus() {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+void updateMQTTStatus(bool connected) {
+  // Update status indicator
+  mqtt_connected = connected;
+}
+
+void publishMQTTStatus() {
+  if (mqttClient.connected()) {
+    String statusTopic = mqttConfig.baseTopic + "/status";
+    mqttClient.publish(statusTopic.c_str(), mqtt_connected ? "online" : "offline");
+  }
+}
+
+// MQTT callback function
+void mqttCallback(char* topic, byte* payload, unsigned int length)
+{
+  // Convert payload to string
+  String message = "";
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  String topicStr = String(topic);
+  // Process MQTT messages here if needed
+}
+
+// Initialize MQTT
+void initMQTT()
+{
+  if (mqttConfig.enabled && mqttConfig.serverIP != "0.0.0.0") {
+    mqttClient.setServer(mqttConfig.serverIP.c_str(), mqttConfig.port);
+    mqttClient.setCallback(mqttCallback);
+    Serial.printf("MQTT client configured for server: %s:%d\n", 
+                  mqttConfig.serverIP.c_str(), mqttConfig.port);
+  } else {
+    Serial.println("MQTT disabled or invalid configuration");
+  }
+}
+
+// Fixed WebSocket message handler
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
+{
+  AwsFrameInfo *info = (AwsFrameInfo *)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)
+  {
+    data[len] = 0;
+    String message = (char *)data;
+  }
+}
+
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len)
+{
+  switch (type)
+  {
+  case WS_EVT_DATA:
+    handleWebSocketMessage(arg, data, len);
+    break;
+  default:
+    break;
+  }
+}
+
+void initWebServer()
+{
+  // Create WebSocket
+  ws.onEvent(onEvent);
+  server.addHandler(&ws);
+
+  // Handle favicon.ico requests to prevent 500 errors
+  server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    // Send a simple 1x1 transparent PNG
+    const uint8_t favicon[] = {
+      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+      0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+      0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+      0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+    };
+    AsyncWebServerResponse *response = request->beginResponse_P(200, "image/png", favicon, sizeof(favicon));
+    request->send(response); });
+
+  // MQTT Configuration API
+  server.on("/api/mqtt/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    doc["enabled"] = mqttConfig.enabled;
+    doc["serverIP"] = mqttConfig.serverIP;
+    doc["port"] = mqttConfig.port;
+    doc["baseTopic"] = mqttConfig.baseTopic;
+    doc["username"] = mqttConfig.username;
+    // Don't send password in GET request for security
+    doc["hasPassword"] = !mqttConfig.password.isEmpty();
+    
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  server.on("/api/mqtt/config", HTTP_POST, [](AsyncWebServerRequest *request) {
+    // Handle form data
+    bool configChanged = false;
+    
+    if (request->hasParam("enabled", true)) {
+      bool newEnabled = request->getParam("enabled", true)->value() == "true";
+      if (newEnabled != mqttConfig.enabled) {
+        mqttConfig.enabled = newEnabled;
+        configChanged = true;
+      }
+    }
+    
+    if (request->hasParam("serverIP", true)) {
+      String newIP = request->getParam("serverIP", true)->value();
+      if (isValidIPAddress(newIP) && newIP != mqttConfig.serverIP) {
+        mqttConfig.serverIP = newIP;
+        configChanged = true;
+      } else if (!isValidIPAddress(newIP)) {
+        request->send(400, "application/json", "{\"error\":\"Invalid IP address\"}");
+        return;
+      }
+    }
+    
+    if (request->hasParam("port", true)) {
+      int newPort = request->getParam("port", true)->value().toInt();
+      if (newPort > 0 && newPort <= 65535 && newPort != mqttConfig.port) {
+        mqttConfig.port = newPort;
+        configChanged = true;
+      }
+    }
+    
+    if (request->hasParam("baseTopic", true)) {
+      String newTopic = request->getParam("baseTopic", true)->value();
+      if (newTopic.isEmpty()) newTopic = "pmu";
+      if (newTopic != mqttConfig.baseTopic) {
+        mqttConfig.baseTopic = newTopic;
+        configChanged = true;
+      }
+    }
+    
+    if (request->hasParam("username", true)) {
+      String newUsername = request->getParam("username", true)->value();
+      if (newUsername != mqttConfig.username) {
+        mqttConfig.username = newUsername;
+        configChanged = true;
+      }
+    }
+    
+    if (request->hasParam("password", true)) {
+      String newPassword = request->getParam("password", true)->value();
+      if (newPassword != mqttConfig.password) {
+        mqttConfig.password = newPassword;
+        configChanged = true;
+      }
+    }
+    
+    if (configChanged) {
+      saveMqttConfig();
+      
+      // Disconnect and reconnect MQTT if needed
+      if (mqttClient.connected()) {
+        mqttClient.disconnect();
+      }
+      
+      initMQTT(); // Reinitialize with new config
+    }
+    
+    request->send(200, "application/json", "{\"status\":\"success\"}");
+  });
+
+  // PMU Configuration API
+  server.on("/api/pmu/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    doc["expectedClients"] = pmuConfig.expectedClients;
+    doc["outputVoltage"] = pmuConfig.outputVoltage;
+    doc["outputCurrent"] = pmuConfig.outputCurrent;
+    
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  server.on("/api/pmu/config", HTTP_POST, [](AsyncWebServerRequest *request) {
+    bool configChanged = false;
+    
+    if (request->hasParam("expectedClients", true)) {
+      int newClients = request->getParam("expectedClients", true)->value().toInt();
+      newClients = constrain(newClients, 1, 10);
+      if (newClients != pmuConfig.expectedClients) {
+        pmuConfig.expectedClients = newClients;
+        configChanged = true;
+      }
+    }
+    
+    if (request->hasParam("outputVoltage", true)) {
+      float newVoltage = request->getParam("outputVoltage", true)->value().toFloat();
+      if (newVoltage != pmuConfig.outputVoltage) {
+        pmuConfig.outputVoltage = newVoltage;
+        configChanged = true;
+      }
+    }
+    
+    if (request->hasParam("outputCurrent", true)) {
+      float newCurrent = request->getParam("outputCurrent", true)->value().toFloat();
+      if (newCurrent != pmuConfig.outputCurrent) {
+        pmuConfig.outputCurrent = newCurrent;
+        configChanged = true;
+      }
+    }
+    
+    if (configChanged) {
+      savePmuConfig();
+    }
+    
+    request->send(200, "application/json", "{\"status\":\"success\"}");
+  });
+
+  // Serve static files from LittleFS root directory (AFTER API routes)
+  server.serveStatic("/", LittleFS, "/")
+      .setDefaultFile("index.html")
+      .setFilter([](AsyncWebServerRequest *request)
+                 {
+      // Only serve static files for non-API routes
+      return !request->url().startsWith("/api/"); });
+
+  // Handle root path explicitly
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    if (LittleFS.exists("/index.html")) {
+      request->send(LittleFS, "/index.html", "text/html");
+    } else {
+      // Simple fallback page
+      String html = "<!DOCTYPE html><html><head><title>Fake PMU</title></head>";
+      html += "<body><h1>Huawei Fake PMU</h1>";
+      html += "<p>Failed to load page. LittleFS storage is corrupt or missing</p>";
+      html += "</body></html>";
+      request->send(200, "text/html", html);
+    } });
+
+  server.begin();
+  Serial.println("Web server started");
+}
+
+// Handle MQTT reconnection
+void handleMQTTReconnect()
+{
+  if (!mqttConfig.enabled || mqttConfig.serverIP == "0.0.0.0") {
+    return; // Don't try to connect if disabled or invalid IP
+  }
+  
+  if (!getEthernetStatus()) {
+    return; // Don't try to connect if ethernet is down
+  }
+  
+  if (millis() - last_mqtt_reconnect < 5000) {
+    return; // Don't try to reconnect too frequently
+  }
+  
+  last_mqtt_reconnect = millis();
+  
+  // Use configured credentials for connection
+  bool connected = false;
+  if (mqttConfig.username.length() > 0) {
+    connected = mqttClient.connect("poe-panel-controller", 
+                                  mqttConfig.username.c_str(), 
+                                  mqttConfig.password.c_str());
+  } else {
+    connected = mqttClient.connect("poe-panel-controller");
+  }
+  
+  if (connected) {
+    Serial.println("MQTT connected");
+    updateMQTTStatus(true);
+    mqtt_connected = true;
+    
+    // Subscribe to topics using configured base topic
+    String moveTopic = mqttConfig.baseTopic + "/move";
+    String ledTopic = mqttConfig.baseTopic + "/led";
+    
+    mqttClient.subscribe(moveTopic.c_str());
+    mqttClient.subscribe(ledTopic.c_str());
+    
+    Serial.printf("MQTT subscribed to: %s, %s\n", moveTopic.c_str(), ledTopic.c_str());
+    
+    // Publish initial status immediately
+    publishMQTTStatus();
+  }
+  else {
+    Serial.printf("MQTT connection failed, rc=%d\n", mqttClient.state());
+    updateMQTTStatus(false);
+    mqtt_connected = false;
+  }
+}
+
+// File system functions - SIMPLIFIED
+void initLittleFS()
+{
+  if (!LittleFS.begin(true))
+  {
+    return;
+  }
+}
 
 // Non-blocking telnet print function
 void printTelnet(const char *message, bool urgent = false)
@@ -395,6 +911,7 @@ int8_t sendSimpleCommand(uint8_t slaveID, uint32_t command)
 
   return 0; // Success
 }
+
 int8_t sendCommandWithPayload(uint8_t slaveID, uint32_t command, uint32_t payload)
 {
   printTelnetf("Sending command with payload to slave %d\n", slaveID);
@@ -656,337 +1173,27 @@ void uartTask(void *parameter)
 
   while (true)
   {
-    // Wait for UART commands
-    /*if (xQueueReceive(uartCommandQueue, &cmd, portMAX_DELAY) == pdTRUE) {
-      response.success = false;
-      response.dataLength = 0;
-      memset(response.data, 0, sizeof(response.data));
-
-    switch (cmd.command) {
-        case CMD_TEST:
-          {
-            snprintf(response.message, sizeof(response.message), "Sending command: 0x%02X with MARK parity...\n", cmd.parameter);
-            xQueueSend(uartResponseQueue, &response, 0);
-
-            bus.flush();
-            bus.write(cmd.parameter, EspSoftwareSerial::PARITY_MARK);
-
-            unsigned long start = millis();
-            while (!bus.available() && (millis() - start < 100)) {
-              delay(1);
-            }
-
-            if (!bus.available()) {
-              snprintf(response.message, sizeof(response.message), "No response within 100ms (timeout)\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            uint8_t buffer[96];
-            size_t count = 0;
-            unsigned long lastByteTime = millis();
-
-            while (count < sizeof(buffer)) {
-              if (bus.available()) {
-                buffer[count++] = bus.read();
-                bus.readParity();
-                lastByteTime = millis();
-              } else {
-                if (millis() - lastByteTime >= 4) break;
-              }
-            }
-
-            delay(1);
-            bus.write(0x7F, EspSoftwareSerial::PARITY_SPACE);
-
-            // Copy data to response
-            if (count > 0) {
-              memcpy(response.data, buffer, min(count, sizeof(response.data)));
-              response.dataLength = count;
-              response.success = true;
-            }
-
-            snprintf(response.message, sizeof(response.message), "Received %d byte(s): ", count);
-            for (size_t i = 0; i < count && i < 32; ++i) {
-              char hex[8];
-              snprintf(hex, sizeof(hex), "0x%02X ", buffer[i]);
-              strcat(response.message, hex);
-            }
-            strcat(response.message, "\n");
-            xQueueSend(uartResponseQueue, &response, 0);
-          }
-          break;
-
-        case CMD_FIRST_COMMAND:
-          {
-            snprintf(response.message, sizeof(response.message), "Sending first sequence...\n");
-            xQueueSend(uartResponseQueue, &response, 0);
-
-            bus.flush();
-
-            // Step 1: Send 0xC0 with MARK parity
-            bus.write(0xC0, EspSoftwareSerial::PARITY_MARK);
-
-            // Step 2: Wait up to 5ms for 0x00 with SPACE parity
-            unsigned long start = micros();
-            while (!bus.available() && micros() - start < 5000) delayMicroseconds(10);
-
-            if (!bus.available()) {
-              snprintf(response.message, sizeof(response.message), "Timeout waiting for 0x00 response\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            int uartResponse = bus.read();
-            int parity = bus.readParity();
-            if (uartResponse != 0x00 || parity) {
-              snprintf(response.message, sizeof(response.message), "Invalid response: 0x%02X, parity: %s\n", uartResponse, parity ? "MARK" : "SPACE");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Step 3: Wait precisely 1.4ms
-            delayMicroseconds(1400);
-
-            // Step 4: Send byte stream with SPACE parity
-            uint8_t request[] = {0x00, 0x04, 0xC8, 0x01, 0xFF, 0xFF, 0xCB};
-            for (size_t i = 0; i < sizeof(request); ++i) {
-              bus.write(request[i], EspSoftwareSerial::PARITY_SPACE);
-            }
-
-            // Step 5: Wait up to 8ms for 0x7F response
-            start = micros();
-            while (!bus.available() && micros() - start < 15000) delayMicroseconds(10);
-
-            if (!bus.available()) {
-              snprintf(response.message, sizeof(response.message), "Timeout waiting for 0x7F ack\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            uartResponse = bus.read();
-            parity = bus.readParity();
-            if (uartResponse != 0x7F || parity) {
-              snprintf(response.message, sizeof(response.message), "Invalid ack: 0x%02X, parity: %s\n", uartResponse, parity ? "MARK" : "SPACE");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Step 6: Wait 1.8ms
-            delayMicroseconds(1800);
-
-            // Step 7: Send 0x20 with MARK parity
-            bus.write(0x20, EspSoftwareSerial::PARITY_MARK);
-
-            // Step 8: Wait up to 8ms for response
-            start = micros();
-            while (!bus.available() && micros() - start < 15000) delayMicroseconds(10);
-
-            if (!bus.available()) {
-              snprintf(response.message, sizeof(response.message), "Timeout waiting for response\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Step 9: Read response
-            uint8_t buffer[64];
-            size_t count = 0;
-            unsigned long lastByteTime = micros();
-
-            while (count < sizeof(buffer)) {
-              if (bus.available()) {
-                buffer[count++] = bus.read();
-                bus.readParity();
-                lastByteTime = micros();
-              } else if (micros() - lastByteTime >= 2000) {
-                break;
-              }
-            }
-
-            // Step 10: Wait 120μs before sending 0x7F
-            delayMicroseconds(120);
-            bus.write(0x7F, EspSoftwareSerial::PARITY_SPACE);
-
-            if (count == 0) {
-              snprintf(response.message, sizeof(response.message), "No data received after 0x20\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            if (count > 1) {
-              snprintf(response.message, sizeof(response.message), "Invalid response: got %d bytes, expected 1\n", count);
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Copy data to response
-            memcpy(response.data, buffer, count);
-            response.dataLength = count;
-            response.success = true;
-
-            snprintf(response.message, sizeof(response.message), "Received response: ");
-            for (size_t i = 0; i < count; ++i) {
-              char hex[8];
-              snprintf(hex, sizeof(hex), "0x%02X ", buffer[i]);
-              strcat(response.message, hex);
-            }
-            strcat(response.message, "\n");
-            xQueueSend(uartResponseQueue, &response, 0);
-          }
-          break;
-
-        case CMD_POLL_DATA:
-          {
-            snprintf(response.message, sizeof(response.message), "Starting poll sequence...\n");
-            xQueueSend(uartResponseQueue, &response, 0);
-
-            bus.flush();
-
-            // Step 1: Send 0xC0 with MARK parity
-            bus.write(0xC0, EspSoftwareSerial::PARITY_MARK);
-
-            // Step 2: Wait up to 5ms for 0x00 with SPACE parity
-            unsigned long start = micros();
-            while (!bus.available() && micros() - start < 15000) delayMicroseconds(10);
-
-            if (!bus.available()) {
-              snprintf(response.message, sizeof(response.message), "Timeout waiting for 0x00 response\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            int uartResponse = bus.read();
-            int parity = bus.readParity();
-            if (uartResponse != 0x00 || parity) {
-              snprintf(response.message, sizeof(response.message), "Invalid response: 0x%02X, parity: %s\n", uartResponse, parity ? "MARK" : "SPACE");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Step 3: Wait precisely 1.4ms
-            delayMicroseconds(1400);
-
-            // Step 4: Send byte stream with SPACE parity
-            uint8_t request[] = {0x00, 0x04, 0xC8, 0x24, 0xFF, 0xFF, 0xEE};
-            for (size_t i = 0; i < sizeof(request); ++i) {
-              bus.write(request[i], EspSoftwareSerial::PARITY_SPACE);
-            }
-
-            // Step 5: Wait up to 8ms for 0x7F response
-            start = micros();
-            while (!bus.available() && micros() - start < 15000) delayMicroseconds(10);
-
-            if (!bus.available()) {
-              snprintf(response.message, sizeof(response.message), "Timeout waiting for 0x7F ack\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            uartResponse = bus.read();
-            parity = bus.readParity();
-            if (uartResponse != 0x7F || parity) {
-              snprintf(response.message, sizeof(response.message), "Invalid ack: 0x%02X, parity: %s\n", uartResponse, parity ? "MARK" : "SPACE");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Step 6: Wait 1.8ms
-            delayMicroseconds(1800);
-
-            // Step 7: Send 0x20 with MARK parity
-            bus.write(0x20, EspSoftwareSerial::PARITY_MARK);
-
-            // Step 8: Wait up to 8ms for the start of 13-byte reply
-            start = micros();
-            while (!bus.available() && micros() - start < 15000) delayMicroseconds(10);
-
-            if (!bus.available()) {
-              snprintf(response.message, sizeof(response.message), "Timeout waiting for 13-byte response\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Step 9: Read up to 64 bytes, timeout if no new byte in 2ms
-            uint8_t buffer[64];
-            size_t count = 0;
-            unsigned long lastByteTime = micros();
-
-            while (count < sizeof(buffer)) {
-              if (bus.available()) {
-                buffer[count++] = bus.read();
-                bus.readParity();
-                lastByteTime = micros();
-              } else if (micros() - lastByteTime >= 2000) {
-                break;
-              }
-            }
-
-            // Step 10: Wait 120μs before sending 0x7F
-            delayMicroseconds(120);
-            bus.write(0x7F, EspSoftwareSerial::PARITY_SPACE);
-
-            if (count == 0) {
-              snprintf(response.message, sizeof(response.message), "No data received after 0x20\n");
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            if (count < 13) {
-              snprintf(response.message, sizeof(response.message), "Incomplete response: got %d bytes, expected 13\n", count);
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            if (count > 13) {
-              snprintf(response.message, sizeof(response.message), "Invalid response: got %d bytes, expected 13\n", count);
-              xQueueSend(uartResponseQueue, &response, 0);
-              break;
-            }
-
-            // Copy data to response
-            memcpy(response.data, buffer, count);
-            response.dataLength = count;
-            response.success = true;
-
-            snprintf(response.message, sizeof(response.message), "Received 13-byte data frame: ");
-            for (size_t i = 0; i < 13; ++i) {
-              char hex[8];
-              snprintf(hex, sizeof(hex), "0x%02X ", buffer[i]);
-              strcat(response.message, hex);
-            }
-            strcat(response.message, "\n");
-            xQueueSend(uartResponseQueue, &response, 0);
-
-            uint16_t voltage = ((uint16_t)buffer[8] << 8) | buffer[9];
-            uint16_t current = ((uint16_t)buffer[10] << 8) | buffer[11];
-            snprintf(response.message, sizeof(response.message), "Voltage: %.2f V, Current: %.2f A\n", voltage / 100.0, current / 100.0);
-            xQueueSend(uartResponseQueue, &response, 0);
-
-            snprintf(response.message, sizeof(response.message), "Poll done\n");
-            xQueueSend(uartResponseQueue, &response, 0);
-          }
-          break;
-      }
-    }*/
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < pmuConfig.expectedClients; i++)
     {
       if (pollSlave(i) == 0)
       {
         if (millis() - lastOutputVoltagePolled > 3500)
         {
-          lastOutputVoltagePolled == millis();
+          lastOutputVoltagePolled = millis();
           sendSimpleCommand(i, MAGIC_OUTPUT_VOLTAGE);
+          pollSlave(i);
+          sendSimpleCommand(i, MAGIC_INPUT_VOLTAGE);
           pollSlave(i);
         }
       }
-      delay(400);
+      delay(1000);
     }
     if(millis() - lastVoltageSetAsked > 10000)
     {
       lastVoltageSetAsked = millis();
       lastV = !lastV;
-      if(lastV)setVoltage(0,44.0,33.0);
-      else setVoltage(0,46.0,33.0);
+      if(lastV) setVoltage(0, pmuConfig.outputVoltage + 2.0, pmuConfig.outputCurrent);
+      else setVoltage(0, pmuConfig.outputVoltage, pmuConfig.outputCurrent);
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -1212,6 +1419,33 @@ void handleTelnetCommand(char *buf)
     printTelnetfUrgent("Connected to: %s\n", WiFi.SSID().c_str());
     printTelnetfUrgent("Signal: %d\n", WiFi.RSSI());
   }
+  else if (strcmp(buf, "config") == 0)
+  {
+    printTelnetfUrgent("====== CONFIGURATION ======= \n");
+    printTelnetfUrgent("MQTT: %s\n", mqttConfig.enabled ? "enabled" : "disabled");
+    printTelnetfUrgent("MQTT Server: %s:%d\n", mqttConfig.serverIP.c_str(), mqttConfig.port);
+    printTelnetfUrgent("MQTT Topic: %s\n", mqttConfig.baseTopic.c_str());
+    printTelnetfUrgent("MQTT User: %s\n", mqttConfig.username.c_str());
+    printTelnetfUrgent("PMU Clients: %d\n", pmuConfig.expectedClients);
+    printTelnetfUrgent("PMU Output: %.1fV %.1fA\n", pmuConfig.outputVoltage, pmuConfig.outputCurrent);
+  }
+  else if (strcmp(buf, "mqtt_enable") == 0)
+  {
+    mqttConfig.enabled = true;
+    saveMqttConfig();
+    initMQTT();
+    printTelnetfUrgent("MQTT enabled\n");
+  }
+  else if (strcmp(buf, "mqtt_disable") == 0)
+  {
+    mqttConfig.enabled = false;
+    if (mqttClient.connected())
+    {
+      mqttClient.disconnect();
+    }
+    saveMqttConfig();
+    printTelnetfUrgent("MQTT disabled\n");
+  }
   else if (strcmp(buf, "test") == 0)
   {
     cmd.command = CMD_TEST;
@@ -1237,7 +1471,7 @@ void handleTelnetCommand(char *buf)
   }
   else if (strcmp(buf, "help") == 0)
   {
-    printTelnetfUrgent("Commands: wifi, test, poll, reboot, help\n");
+    printTelnetfUrgent("Commands: wifi, config, mqtt_enable, mqtt_disable, test, poll, reboot, help\n");
   }
   else
   {
@@ -1293,6 +1527,19 @@ void setup()
       &telnetTaskHandle, // Task handle
       0                  // Core 0 - with WiFi
   );
+
+  // Initialize file system
+  initLittleFS();
+  
+  // Load configurations
+  loadMqttConfig();
+  loadPmuConfig();
+
+  // Initialize MQTT with loaded config
+  initMQTT();
+
+  // Initialize web server
+  initWebServer();
 
   WiFi.onEvent(WiFiEvent);
   wifiConnect();
@@ -1377,4 +1624,10 @@ void loop()
 {
   telnetloop();
   ArduinoOTA.handle();
+  handleMQTTReconnect();
+  // Process MQTT messages
+  if (mqttClient.connected())
+  {
+    mqttClient.loop();
+  }
 }

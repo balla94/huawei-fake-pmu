@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>huawei fake PMU</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: #333;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .power-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .power-brick {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            border: 3px solid transparent;
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .power-brick:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+        }
+
+        .power-brick.online {
+            background: linear-gradient(135deg, #4CAF50, #66BB6A);
+            color: white;
+            border-color: #2E7D32;
+        }
+
+        .power-brick.offline {
+            background: linear-gradient(135deg, #757575, #9E9E9E);
+            color: white;
+            border-color: #424242;
+        }
+
+        .power-brick.warn {
+            background: linear-gradient(135deg, #FF9800, #FFB74D);
+            color: white;
+            border-color: #F57C00;
+        }
+
+        .brick-header {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+
+        .brick-id {
+            font-size: 1.4em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .brick-status {
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            opacity: 0.9;
+        }
+
+        .measurements {
+            flex-grow: 1;
+        }
+
+        .measurement-group {
+            margin-bottom: 12px;
+        }
+
+        .measurement-label {
+            font-size: 0.8em;
+            opacity: 0.8;
+            margin-bottom: 2px;
+            text-align: center;
+        }
+
+        .measurement-value {
+            font-size: 1.1em;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .power-brick.uninitialized {
+            background: linear-gradient(135deg, #e0e0e0, #f5f5f5);
+            color: #999;
+            border-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .power-brick.uninitialized:hover {
+            transform: none;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .global-hint {
+            text-align: center;
+            font-size: 1em;
+            color: white;
+            margin-top: 30px;
+            opacity: 0.8;
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 10% auto;
+            padding: 30px;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            animation: modalSlideIn 0.3s ease;
+        }
+
+        @keyframes modalSlideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .modal-header {
+            text-align: center;
+            margin-bottom: 25px;
+            color: #333;
+        }
+
+        .modal-header h2 {
+            font-size: 1.8em;
+            margin-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #2a5298;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 30px;
+        }
+
+        .btn {
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #2a5298, #1e3c72);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(42, 82, 152, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .close {
+            position: absolute;
+            right: 15px;
+            top: 15px;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            color: #999;
+        }
+
+        .close:hover {
+            color: #333;
+        }
+
+        @media (max-width: 768px) {
+            .power-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 15px;
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .mqtt-section {
+                padding: 10px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .power-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* MQTT Configuration Styles */
+        .mqtt-section {
+            max-width: 1400px;
+            margin: 30px auto 0;
+            padding: 20px;
+        }
+
+        .mqtt-config-box {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            border: 3px solid #ddd;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .mqtt-config-box:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+        }
+
+        .mqtt-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .mqtt-header h3 {
+            color: #333;
+            margin: 0;
+        }
+
+        .mqtt-status {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .mqtt-status.enabled {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .mqtt-status.disabled {
+            background: #757575;
+            color: white;
+        }
+
+        .mqtt-info {
+            color: #666;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        .click-hint {
+            text-align: center;
+            font-size: 0.8em;
+            opacity: 0.7;
+            margin-top: 15px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Huawei fake PMU</h1>
+    <!-- MQTT Configuration Modal -->
+    <div id="mqttModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeMqttModal()">&times;</span>
+            <div class="modal-header">
+                <h2>MQTT Configuration</h2>
+                <p>Configure MQTT connection settings</p>
+            </div>
+            <form id="mqttForm">
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="mqttEnabled" onchange="toggleMqttFields()"> Enable MQTT
+                    </label>
+                </div>
+                <div id="mqttFields" style="display: none;">
+                    <div class="form-group">
+                        <label for="mqttServer">Server IP Address:</label>
+                        <input type="text" id="mqttServer" placeholder="192.168.1.100" pattern="^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$" title="Please enter a valid IP address">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttPort">Port:</label>
+                        <input type="number" id="mqttPort" value="1883" min="1" max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttTopic">Base Topic Name:</label>
+                        <input type="text" id="mqttTopic" placeholder="power/supplies" pattern="^[A-Za-z0-9/]+$" title="Only letters, numbers, and forward slashes allowed">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttUsername">Username (optional):</label>
+                        <input type="text" id="mqttUsername" placeholder="mqtt_user">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttPassword">Password (optional):</label>
+                        <input type="password" id="mqttPassword" placeholder="••••••••">
+                    </div>
+                </div>
+                <div class="modal-buttons">
+                    <button type="submit" class="btn btn-primary">Save Configuration</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeMqttModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="power-grid" id="powerGrid">
+        <!-- Power bricks will be generated by JavaScript -->
+    </div>
+
+    <div class="mqtt-section">
+        <div class="mqtt-config-box" onclick="openMqttModal()">
+            <div class="mqtt-header">
+                <h3>MQTT Configuration</h3>
+                <div class="mqtt-status" id="mqttStatus">Disabled</div>
+            </div>
+            <div class="mqtt-info" id="mqttInfo">
+                <div>Server: Not configured</div>
+                <div>Topic: Not configured</div>
+            </div>
+            <div class="click-hint">Click to configure MQTT</div>
+        </div>
+    </div>
+
+    <div class="global-hint" id="globalHint">Click on any power supply unit to configure output parameters</div>
+
+    <!-- Configuration Modal -->
+    <div id="configModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <div class="modal-header">
+                <h2>Configure Power Supply</h2>
+                <p id="modalUnitId">Unit #1</p>
+            </div>
+            <form id="configForm">
+                <div class="form-group">
+                    <label for="outputVoltage">Output Voltage (V):</label>
+                    <input type="number" id="outputVoltage" min="0" max="300" step="0.1" required>
+                </div>
+                <div class="form-group">
+                    <label for="outputCurrent">Output Current Limit (A):</label>
+                    <input type="number" id="outputCurrent" min="0" max="100" step="0.1" required>
+                </div>
+                <div class="modal-buttons">
+                    <button type="submit" class="btn btn-primary">Apply Settings</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Power supply data structure
+        let powerSupplies = [];
+        let currentConfigId = null;
+        let isSystemInitialized = false;
+        
+        // MQTT configuration
+        let mqttConfig = {
+            enabled: false,
+            server: '',
+            port: 1883,
+            topic: '',
+            username: '',
+            password: ''
+        };
+
+        // Initialize power supplies with sample data
+        function initializePowerSupplies() {
+            for (let i = 1; i <= 10; i++) {
+                powerSupplies.push({
+                    id: i,
+                    status: 'uninitialized',
+                    inputVoltage: '---',
+                    inputCurrent: '---',
+                    outputVoltage: '---',
+                    outputCurrent: '---'
+                });
+            }
+        }
+
+        // Simulate system initialization
+        function simulateSystemInit() {
+            setTimeout(() => {
+                for (let i = 1; i <= 10; i++) {
+                    powerSupplies[i - 1] = {
+                        id: i,
+                        status: 'online',
+                        inputVoltage: (220 + Math.random() * 20 - 10).toFixed(1),
+                        inputCurrent: (2 + Math.random() * 3).toFixed(2),
+                        outputVoltage: (24 + Math.random() * 2 - 1).toFixed(1),
+                        outputCurrent: (1.5 + Math.random() * 2).toFixed(2)
+                    };
+                }
+                isSystemInitialized = true;
+                document.getElementById('globalHint').style.display = 'block';
+                renderPowerGrid();
+            }, 2000); // 2 second delay to simulate loading
+        }
+
+        // Set rectifier status function as requested
+        function setRectifierStatus(unitId, status) {
+            if (unitId >= 1 && unitId <= 10 && ['online', 'offline', 'warn'].includes(status) && isSystemInitialized) {
+                powerSupplies[unitId - 1].status = status;
+                renderPowerGrid();
+            }
+        }
+
+        // Generate HTML for a single power brick
+        function createPowerBrick(unit) {
+            const statusText = {
+                'online': 'ONLINE',
+                'offline': 'OFFLINE',
+                'warn': 'WARNING',
+                'uninitialized': 'INITIALIZING'
+            };
+
+            const clickable = unit.status !== 'uninitialized';
+            const onclick = clickable ? `onclick="openConfigModal(${unit.id})"` : '';
+
+            return `
+                <div class="power-brick ${unit.status}" ${onclick}>
+                    <div class="brick-header">
+                        <div class="brick-id">PSU #${unit.id}</div>
+                        <div class="brick-status">${statusText[unit.status]}</div>
+                    </div>
+                    <div class="measurements">
+                        <div class="measurement-group">
+                            <div class="measurement-label">INPUT</div>
+                            <div class="measurement-value">
+                                <span>${unit.inputVoltage}V</span>
+                                <span>${unit.inputCurrent}A</span>
+                            </div>
+                        </div>
+                        <div class="measurement-group">
+                            <div class="measurement-label">OUTPUT</div>
+                            <div class="measurement-value">
+                                <span>${unit.outputVoltage}V</span>
+                                <span>${unit.outputCurrent}A</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Render the power grid
+        function renderPowerGrid() {
+            const grid = document.getElementById('powerGrid');
+            grid.innerHTML = powerSupplies.map(createPowerBrick).join('');
+        }
+
+        // Open configuration modal
+        function openConfigModal(unitId) {
+            if (!isSystemInitialized) return;
+            
+            currentConfigId = unitId;
+            const unit = powerSupplies[unitId - 1];
+            
+            document.getElementById('modalUnitId').textContent = `Power Supply Unit #${unitId}`;
+            document.getElementById('outputVoltage').value = unit.outputVoltage;
+            document.getElementById('outputCurrent').value = unit.outputCurrent;
+            document.getElementById('configModal').style.display = 'block';
+        }
+
+        // Close configuration modal
+        function closeModal() {
+            document.getElementById('configModal').style.display = 'none';
+            currentConfigId = null;
+        }
+
+        // MQTT Modal Functions
+        function openMqttModal() {
+            document.getElementById('mqttEnabled').checked = mqttConfig.enabled;
+            document.getElementById('mqttServer').value = mqttConfig.server;
+            document.getElementById('mqttPort').value = mqttConfig.port;
+            document.getElementById('mqttTopic').value = mqttConfig.topic;
+            document.getElementById('mqttUsername').value = mqttConfig.username;
+            document.getElementById('mqttPassword').value = mqttConfig.password;
+            
+            toggleMqttFields();
+            document.getElementById('mqttModal').style.display = 'block';
+        }
+
+        function closeMqttModal() {
+            document.getElementById('mqttModal').style.display = 'none';
+        }
+
+        function toggleMqttFields() {
+            const enabled = document.getElementById('mqttEnabled').checked;
+            const fields = document.getElementById('mqttFields');
+            fields.style.display = enabled ? 'block' : 'none';
+            
+            // Make fields required only when MQTT is enabled
+            const inputs = fields.querySelectorAll('input[type="text"], input[type="number"]');
+            inputs.forEach(input => {
+                if (input.id === 'mqttServer' || input.id === 'mqttTopic') {
+                    input.required = enabled;
+                }
+            });
+        }
+
+        function updateMqttDisplay() {
+            const statusEl = document.getElementById('mqttStatus');
+            const infoEl = document.getElementById('mqttInfo');
+            
+            if (mqttConfig.enabled) {
+                statusEl.textContent = 'Enabled';
+                statusEl.className = 'mqtt-status enabled';
+                infoEl.innerHTML = `
+                    <div>Server: ${mqttConfig.server}:${mqttConfig.port}</div>
+                    <div>Topic: ${mqttConfig.topic}</div>
+                `;
+            } else {
+                statusEl.textContent = 'Disabled';
+                statusEl.className = 'mqtt-status disabled';
+                infoEl.innerHTML = `
+                    <div>Server: Not configured</div>
+                    <div>Topic: Not configured</div>
+                `;
+            }
+        }
+
+        // Validate IP address
+        function isValidIP(ip) {
+            const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+            return ipRegex.test(ip);
+        }
+
+        // Validate topic name
+        function isValidTopic(topic) {
+            const topicRegex = /^[A-Za-z0-9/]+$/;
+            return topicRegex.test(topic);
+        }
+
+        // Handle power supply form submission
+        document.getElementById('configForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            if (currentConfigId && isSystemInitialized) {
+                const unit = powerSupplies[currentConfigId - 1];
+                unit.outputVoltage = parseFloat(document.getElementById('outputVoltage').value).toFixed(1);
+                unit.outputCurrent = parseFloat(document.getElementById('outputCurrent').value).toFixed(2);
+                
+                // Simulate input changes based on output (simplified)
+                unit.inputCurrent = (parseFloat(unit.outputCurrent) * 1.2).toFixed(2);
+                
+                renderPowerGrid();
+                closeModal();
+                
+                alert(`Configuration updated for PSU #${currentConfigId}\nOutput: ${unit.outputVoltage}V, ${unit.outputCurrent}A`);
+            }
+        });
+
+        // Handle MQTT form submission
+        document.getElementById('mqttForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const enabled = document.getElementById('mqttEnabled').checked;
+            
+            if (enabled) {
+                const server = document.getElementById('mqttServer').value;
+                const topic = document.getElementById('mqttTopic').value;
+                
+                if (!isValidIP(server)) {
+                    alert('Please enter a valid IP address for the MQTT server.');
+                    return;
+                }
+                
+                if (!isValidTopic(topic)) {
+                    alert('Topic name can only contain letters, numbers, and forward slashes.');
+                    return;
+                }
+                
+                mqttConfig.enabled = true;
+                mqttConfig.server = server;
+                mqttConfig.port = parseInt(document.getElementById('mqttPort').value);
+                mqttConfig.topic = topic;
+                mqttConfig.username = document.getElementById('mqttUsername').value;
+                mqttConfig.password = document.getElementById('mqttPassword').value;
+            } else {
+                mqttConfig.enabled = false;
+            }
+            
+            updateMqttDisplay();
+            closeMqttModal();
+            
+            if (enabled) {
+                alert(`MQTT Configuration Saved\nServer: ${mqttConfig.server}:${mqttConfig.port}\nTopic: ${mqttConfig.topic}`);
+            } else {
+                alert('MQTT has been disabled');
+            }
+        });
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const configModal = document.getElementById('configModal');
+            const mqttModal = document.getElementById('mqttModal');
+            if (event.target === configModal) {
+                closeModal();
+            } else if (event.target === mqttModal) {
+                closeMqttModal();
+            }
+        }
+
+        // Simulate status changes for demonstration (only after initialization)
+        function simulateStatusChanges() {
+            setInterval(() => {
+                if (!isSystemInitialized) return;
+                
+                const randomUnit = Math.floor(Math.random() * 10) + 1;
+                const statuses = ['online', 'offline', 'warn'];
+                const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
+                
+                // Mostly keep units online for realistic simulation
+                if (Math.random() > 0.1) {
+                    setRectifierStatus(randomUnit, 'online');
+                } else {
+                    setRectifierStatus(randomUnit, randomStatus);
+                }
+            }, 5000);
+        }
+
+        // Initialize the application
+        initializePowerSupplies();
+        renderPowerGrid();
+        updateMqttDisplay();
+
+        // Hide global hint initially
+        document.getElementById('globalHint').style.display = 'none';
+
+        // Start system initialization simulation
+        simulateSystemInit();
+
+        // Start status simulation
+        simulateStatusChanges();
+
+        // Example usage of setRectifierStatus function
+        // You can call these functions from external RS485 communication code:
+        /*
+        setRectifierStatus(1, 'online');   // Set PSU #1 to online
+        setRectifierStatus(2, 'warn');     // Set PSU #2 to warning
+        setRectifierStatus(3, 'offline');  // Set PSU #3 to offline
+        */
+    </script>
+</body>
+</html>
