@@ -1494,6 +1494,8 @@ void setup()
 {
   delay(200);
   Serial.begin(115200);
+    WiFi.onEvent(WiFiEvent);
+  wifiConnect();
 
   // Create all queues
   telnetQueue = xQueueCreate(TELNET_QUEUE_SIZE, sizeof(TelnetMessage));
@@ -1541,8 +1543,7 @@ void setup()
   // Initialize web server
   initWebServer();
 
-  WiFi.onEvent(WiFiEvent);
-  wifiConnect();
+
   telnetserver.begin();
 
   ArduinoOTA.begin();
