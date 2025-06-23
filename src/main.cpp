@@ -48,7 +48,8 @@ QueueHandle_t uartResponseQueue;
 TaskHandle_t uartTaskHandle;
 
 // Configuration structures
-struct MqttConfig {
+struct MqttConfig
+{
   bool enabled;
   String serverIP;
   String baseTopic;
@@ -57,7 +58,8 @@ struct MqttConfig {
   int port;
 };
 
-struct PmuConfig {
+struct PmuConfig
+{
   int expectedClients;
   float outputVoltage;
   float outputCurrent;
@@ -118,38 +120,46 @@ void publishMQTTStatus();
 void saveMqttConfig();
 void savePmuConfig();
 void initMQTT();
-void mqttCallback(char* topic, byte* payload, unsigned int length);
+void mqttCallback(char *topic, byte *payload, unsigned int length);
 int8_t pollSlave(uint8_t slaveID);
 
 // Validate IP address format
-bool isValidIPAddress(const String& ip) {
+bool isValidIPAddress(const String &ip)
+{
   int parts[4];
   int partCount = 0;
   int startIndex = 0;
-  
-  for (int i = 0; i <= ip.length(); i++) {
-    if (i == ip.length() || ip.charAt(i) == '.') {
-      if (partCount >= 4) return false;
-      
+
+  for (int i = 0; i <= ip.length(); i++)
+  {
+    if (i == ip.length() || ip.charAt(i) == '.')
+    {
+      if (partCount >= 4)
+        return false;
+
       String part = ip.substring(startIndex, i);
-      if (part.length() == 0 || part.length() > 3) return false;
-      
+      if (part.length() == 0 || part.length() > 3)
+        return false;
+
       int value = part.toInt();
-      if (value < 0 || value > 255) return false;
-      
+      if (value < 0 || value > 255)
+        return false;
+
       // Check if conversion was valid (not just 0 from invalid string)
-      if (value == 0 && part != "0") return false;
-      
+      if (value == 0 && part != "0")
+        return false;
+
       parts[partCount++] = value;
       startIndex = i + 1;
     }
   }
-  
+
   return partCount == 4;
 }
 
 // Save MQTT configuration
-void saveMqttConfig() {
+void saveMqttConfig()
+{
   JsonDocument doc;
   doc["enabled"] = mqttConfig.enabled;
   doc["serverIP"] = mqttConfig.serverIP;
@@ -157,36 +167,44 @@ void saveMqttConfig() {
   doc["username"] = mqttConfig.username;
   doc["password"] = mqttConfig.password;
   doc["port"] = mqttConfig.port;
-  
+
   File file = LittleFS.open("/config/mqtt.cfg", "w");
-  if (file) {
+  if (file)
+  {
     serializeJson(doc, file);
     file.close();
     Serial.println("MQTT config saved");
-  } else {
+  }
+  else
+  {
     Serial.println("Failed to save MQTT config");
   }
 }
 
 // Save PMU configuration
-void savePmuConfig() {
+void savePmuConfig()
+{
   JsonDocument doc;
   doc["expectedClients"] = pmuConfig.expectedClients;
   doc["outputVoltage"] = pmuConfig.outputVoltage;
   doc["outputCurrent"] = pmuConfig.outputCurrent;
-  
+
   File file = LittleFS.open("/config/pmu.cfg", "w");
-  if (file) {
+  if (file)
+  {
     serializeJson(doc, file);
     file.close();
     Serial.println("PMU config saved");
-  } else {
+  }
+  else
+  {
     Serial.println("Failed to save PMU config");
   }
 }
 
 // Load MQTT configuration
-void loadMqttConfig() {
+void loadMqttConfig()
+{
   // Set defaults first
   mqttConfig.enabled = false;
   mqttConfig.serverIP = "0.0.0.0";
@@ -194,125 +212,151 @@ void loadMqttConfig() {
   mqttConfig.username = "admin";
   mqttConfig.password = "";
   mqttConfig.port = 1883;
-  
-  if (!LittleFS.exists("/config")) {
+
+  if (!LittleFS.exists("/config"))
+  {
     LittleFS.mkdir("/config");
   }
-  
-  if (LittleFS.exists("/config/mqtt.cfg")) {
+
+  if (LittleFS.exists("/config/mqtt.cfg"))
+  {
     File file = LittleFS.open("/config/mqtt.cfg", "r");
-    if (file) {
+    if (file)
+    {
       String content = file.readString();
       file.close();
-      
+
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, content);
-      
-      if (!error) {
+
+      if (!error)
+      {
         mqttConfig.enabled = doc["enabled"] | false;
         String serverIP = doc["serverIP"] | "0.0.0.0";
-        
+
         // Validate IP address
-        if (isValidIPAddress(serverIP)) {
+        if (isValidIPAddress(serverIP))
+        {
           mqttConfig.serverIP = serverIP;
-        } else {
+        }
+        else
+        {
           mqttConfig.serverIP = "0.0.0.0";
           mqttConfig.enabled = false; // Disable if invalid IP
           Serial.println("Invalid MQTT server IP, MQTT disabled");
         }
-        
+
         mqttConfig.baseTopic = doc["baseTopic"] | "pmu";
-        if (mqttConfig.baseTopic.isEmpty()) {
+        if (mqttConfig.baseTopic.isEmpty())
+        {
           mqttConfig.baseTopic = "pmu";
         }
-        
+
         mqttConfig.username = doc["username"] | "admin";
         mqttConfig.password = doc["password"] | "";
         mqttConfig.port = doc["port"] | 1883;
-        
-        Serial.printf("MQTT config loaded: %s, IP: %s, Topic: %s\n", 
-                    mqttConfig.enabled ? "enabled" : "disabled",
-                    mqttConfig.serverIP.c_str(),
-                    mqttConfig.baseTopic.c_str());
-      } else {
+
+        Serial.printf("MQTT config loaded: %s, IP: %s, Topic: %s\n",
+                      mqttConfig.enabled ? "enabled" : "disabled",
+                      mqttConfig.serverIP.c_str(),
+                      mqttConfig.baseTopic.c_str());
+      }
+      else
+      {
         Serial.println("Failed to parse MQTT config, using defaults");
         saveMqttConfig(); // Save defaults
       }
     }
-  } else {
+  }
+  else
+  {
     Serial.println("MQTT config not found, creating default");
     saveMqttConfig();
   }
 }
 
 // Load PMU configuration
-void loadPmuConfig() {
+void loadPmuConfig()
+{
   // Set defaults first
   pmuConfig.expectedClients = 10;
   pmuConfig.outputVoltage = 48.0;
   pmuConfig.outputCurrent = 33.0;
-  
-  if (!LittleFS.exists("/config")) {
+
+  if (!LittleFS.exists("/config"))
+  {
     LittleFS.mkdir("/config");
   }
-  
-  if (LittleFS.exists("/config/pmu.cfg")) {
+
+  if (LittleFS.exists("/config/pmu.cfg"))
+  {
     File file = LittleFS.open("/config/pmu.cfg", "r");
-    if (file) {
+    if (file)
+    {
       String content = file.readString();
       file.close();
-      
+
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, content);
-      
-      if (!error) {
+
+      if (!error)
+      {
         int clients = doc["expectedClients"] | 10;
         pmuConfig.expectedClients = constrain(clients, 1, 10);
-        
+
         pmuConfig.outputVoltage = doc["outputVoltage"] | 48.0;
         pmuConfig.outputCurrent = doc["outputCurrent"] | 33.0;
-        
-        Serial.printf("PMU config loaded: %d clients, %.1fV, %.1fA\n", 
-                    pmuConfig.expectedClients,
-                    pmuConfig.outputVoltage,
-                    pmuConfig.outputCurrent);
-      } else {
+
+        Serial.printf("PMU config loaded: %d clients, %.1fV, %.1fA\n",
+                      pmuConfig.expectedClients,
+                      pmuConfig.outputVoltage,
+                      pmuConfig.outputCurrent);
+      }
+      else
+      {
         Serial.println("Failed to parse PMU config, using defaults");
         savePmuConfig(); // Save defaults
       }
     }
-  } else {
+  }
+  else
+  {
     Serial.println("PMU config not found, creating default");
     savePmuConfig();
   }
 }
 
 // Dummy functions for compatibility
-bool getEthernetStatus() {
+bool getEthernetStatus()
+{
   return WiFi.status() == WL_CONNECTED;
 }
 
-void updateMQTTStatus(bool connected) {
+void updateMQTTStatus(bool connected)
+{
   // Update status indicator
   mqtt_connected = connected;
 }
 
-void publishMQTTStatus() {
-  if (mqttClient.connected()) {
+void publishMQTTStatus()
+{
+  if (mqttClient.connected())
+  {
     String statusTopic = mqttConfig.baseTopic + "/status";
     mqttClient.publish(statusTopic.c_str(), mqtt_connected ? "online" : "offline");
   }
 }
 
 // MQTT callback function
-void mqttCallback(char* topic, byte* payload, unsigned int length)
+void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
   // Convert payload to string
   String message = "";
-  for (unsigned int i = 0; i < length; i++) {
+  for (unsigned int i = 0; i < length; i++)
+  {
     message += (char)payload[i];
   }
-  
+
   String topicStr = String(topic);
   // Process MQTT messages here if needed
 }
@@ -320,12 +364,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
 // Initialize MQTT
 void initMQTT()
 {
-  if (mqttConfig.enabled && mqttConfig.serverIP != "0.0.0.0") {
+  if (mqttConfig.enabled && mqttConfig.serverIP != "0.0.0.0")
+  {
     mqttClient.setServer(mqttConfig.serverIP.c_str(), mqttConfig.port);
     mqttClient.setCallback(mqttCallback);
-    Serial.printf("MQTT client configured for server: %s:%d\n", 
+    Serial.printf("MQTT client configured for server: %s:%d\n",
                   mqttConfig.serverIP.c_str(), mqttConfig.port);
-  } else {
+  }
+  else
+  {
     Serial.println("MQTT disabled or invalid configuration");
   }
 }
@@ -375,7 +422,8 @@ void initWebServer()
     request->send(response); });
 
   // MQTT Configuration API
-  server.on("/api/mqtt/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+  server.on("/api/mqtt/config", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
     JsonDocument doc;
     doc["enabled"] = mqttConfig.enabled;
     doc["serverIP"] = mqttConfig.serverIP;
@@ -387,10 +435,10 @@ void initWebServer()
     
     String response;
     serializeJson(doc, response);
-    request->send(200, "application/json", response);
-  });
+    request->send(200, "application/json", response); });
 
-  server.on("/api/mqtt/config", HTTP_POST, [](AsyncWebServerRequest *request) {
+  server.on("/api/mqtt/config", HTTP_POST, [](AsyncWebServerRequest *request)
+            {
     // Handle form data
     bool configChanged = false;
     
@@ -457,11 +505,11 @@ void initWebServer()
       initMQTT(); // Reinitialize with new config
     }
     
-    request->send(200, "application/json", "{\"status\":\"success\"}");
-  });
+    request->send(200, "application/json", "{\"status\":\"success\"}"); });
 
   // PMU Configuration API
-  server.on("/api/pmu/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+  server.on("/api/pmu/config", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
     JsonDocument doc;
     doc["expectedClients"] = pmuConfig.expectedClients;
     doc["outputVoltage"] = pmuConfig.outputVoltage;
@@ -469,10 +517,10 @@ void initWebServer()
     
     String response;
     serializeJson(doc, response);
-    request->send(200, "application/json", response);
-  });
+    request->send(200, "application/json", response); });
 
-  server.on("/api/pmu/config", HTTP_POST, [](AsyncWebServerRequest *request) {
+  server.on("/api/pmu/config", HTTP_POST, [](AsyncWebServerRequest *request)
+            {
     bool configChanged = false;
     
     if (request->hasParam("expectedClients", true)) {
@@ -504,8 +552,7 @@ void initWebServer()
       savePmuConfig();
     }
     
-    request->send(200, "application/json", "{\"status\":\"success\"}");
-  });
+    request->send(200, "application/json", "{\"status\":\"success\"}"); });
 
   // Serve static files from LittleFS root directory (AFTER API routes)
   server.serveStatic("/", LittleFS, "/")
@@ -536,48 +583,56 @@ void initWebServer()
 // Handle MQTT reconnection
 void handleMQTTReconnect()
 {
-  if (!mqttConfig.enabled || mqttConfig.serverIP == "0.0.0.0") {
+  if (!mqttConfig.enabled || mqttConfig.serverIP == "0.0.0.0")
+  {
     return; // Don't try to connect if disabled or invalid IP
   }
-  
-  if (!getEthernetStatus()) {
+
+  if (!getEthernetStatus())
+  {
     return; // Don't try to connect if ethernet is down
   }
-  
-  if (millis() - last_mqtt_reconnect < 5000) {
+
+  if (millis() - last_mqtt_reconnect < 5000)
+  {
     return; // Don't try to reconnect too frequently
   }
-  
+
   last_mqtt_reconnect = millis();
-  
+
   // Use configured credentials for connection
   bool connected = false;
-  if (mqttConfig.username.length() > 0) {
-    connected = mqttClient.connect("poe-panel-controller", 
-                                  mqttConfig.username.c_str(), 
-                                  mqttConfig.password.c_str());
-  } else {
+  if (mqttConfig.username.length() > 0)
+  {
+    connected = mqttClient.connect("poe-panel-controller",
+                                   mqttConfig.username.c_str(),
+                                   mqttConfig.password.c_str());
+  }
+  else
+  {
     connected = mqttClient.connect("poe-panel-controller");
   }
-  
-  if (connected) {
+
+  if (connected)
+  {
     Serial.println("MQTT connected");
     updateMQTTStatus(true);
     mqtt_connected = true;
-    
+
     // Subscribe to topics using configured base topic
     String moveTopic = mqttConfig.baseTopic + "/move";
     String ledTopic = mqttConfig.baseTopic + "/led";
-    
+
     mqttClient.subscribe(moveTopic.c_str());
     mqttClient.subscribe(ledTopic.c_str());
-    
+
     Serial.printf("MQTT subscribed to: %s, %s\n", moveTopic.c_str(), ledTopic.c_str());
-    
+
     // Publish initial status immediately
     publishMQTTStatus();
   }
-  else {
+  else
+  {
     Serial.printf("MQTT connection failed, rc=%d\n", mqttClient.state());
     updateMQTTStatus(false);
     mqtt_connected = false;
@@ -1173,27 +1228,28 @@ void uartTask(void *parameter)
 
   while (true)
   {
-    for (int i = 0; i < pmuConfig.expectedClients; i++)
+    for (int i = 0; i < 1; i++)
     {
       if (pollSlave(i) == 0)
       {
-        if (millis() - lastOutputVoltagePolled > 3500)
+        if (millis() - lastOutputVoltagePolled > 1000)
         {
           lastOutputVoltagePolled = millis();
-          sendSimpleCommand(i, MAGIC_OUTPUT_VOLTAGE);
+
+          // Send current command in round-robin sequence
+          sendSimpleCommand(i, pollCommands[commandIndex]);
           pollSlave(i);
-          sendSimpleCommand(i, MAGIC_INPUT_VOLTAGE);
-          pollSlave(i);
+
+          // Move to next command for next iteration
+          commandIndex = (commandIndex + 1) % numCommands;
         }
       }
-      delay(1000);
+      delay(300);
     }
-    if(millis() - lastVoltageSetAsked > 10000)
+    if (millis() - lastVoltageSetAsked > 5000)
     {
       lastVoltageSetAsked = millis();
-      lastV = !lastV;
-      if(lastV) setVoltage(0, pmuConfig.outputVoltage + 2.0, pmuConfig.outputCurrent);
-      else setVoltage(0, pmuConfig.outputVoltage, pmuConfig.outputCurrent);
+      setVoltage(0, 50.00, 2.00);
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -1494,7 +1550,7 @@ void setup()
 {
   delay(200);
   Serial.begin(115200);
-    WiFi.onEvent(WiFiEvent);
+  WiFi.onEvent(WiFiEvent);
   wifiConnect();
 
   // Create all queues
@@ -1532,7 +1588,7 @@ void setup()
 
   // Initialize file system
   initLittleFS();
-  
+
   // Load configurations
   loadMqttConfig();
   loadPmuConfig();
@@ -1542,7 +1598,6 @@ void setup()
 
   // Initialize web server
   initWebServer();
-
 
   telnetserver.begin();
 
